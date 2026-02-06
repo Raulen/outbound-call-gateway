@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import httpx
 
@@ -14,7 +14,12 @@ class UltravoxCallClient:
         self._cfg = cfg
         self._log = log
 
-    async def create_ws_call_join_url(self, system_prompt: Optional[str] = None) -> str:
+    async def create_ws_call_join_url(
+            self,
+            system_prompt: Optional[str] = None,
+            *,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
         self._cfg.require("ULTRAVOX_API_KEY", self._cfg.ultravox_api_key)
         self._cfg.require("ULTRAVOX_VOICE", self._cfg.ultravox_voice)
 
@@ -31,6 +36,9 @@ class UltravoxCallClient:
                 }
             },
         }
+
+        if metadata is not None:
+            body["metadata"] = metadata
 
         headers = {"X-API-Key": self._cfg.ultravox_api_key, "Content-Type": "application/json"}
 

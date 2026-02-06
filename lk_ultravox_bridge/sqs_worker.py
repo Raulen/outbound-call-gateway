@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from typing import Optional, Dict, Any
 
 from .config import BridgeConfig
 from .logging_utils import ConfigDumper
@@ -25,6 +26,22 @@ class TriggerCallProcessor:
         self._uv = UltravoxCallClient(cfg, log)
         self._dialer = LiveKitSipDialer(cfg, log)
 
+    def build_ultravox_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        md = payload.get("metadata") or {}
+
+        call_id = md.get("callId") or payload.get("callId") or payload.get("id")
+
+        return {
+            "organizationId": payload.get("organizationId"),
+            "tenantId": payload.get("tenantId"),
+            "workflowId": md.get("workflowId"),
+            "campaignId": md.get("campaignId"),
+            "customerId": md.get("customerId"),
+            "callId": call_id,
+            "userId": md.get("userId"),
+            "transport": "ULTRAVOX_SIP",
+        }
+
     async def process_body(self, body: str) -> None:
         payload = json.loads(body)
         msg = self._parser.parse(payload)
@@ -39,7 +56,13 @@ class TriggerCallProcessor:
         agent = BridgeAgent(self._cfg, self._log, room_name)
         await agent.connect_livekit()
 
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt)
+        self._log.info(payload)
+
+        metadata = self.build_ultravox_metadata(payload)
+
+        self._log.info(metadata)
+
+        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, metadata=metadata)
 
         dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number))
         self._log.info("[SQS] dialing started in background")
