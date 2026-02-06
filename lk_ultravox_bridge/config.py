@@ -25,8 +25,8 @@ class BridgeConfig:
 
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
     aws_profile: str = os.environ.get("AWS_PROFILE", "riachuelo-stage")
-    aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "AKIAXANWPCZJXGPBTR3O")
-    aws_secret_access_key: str = os.environ.get("AWS_SECRET_ACCESS_KEY", "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")
+    aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "AKIAXANWPCZJTUVTNFIY")
+    aws_secret_access_key: str = os.environ.get("AWS_SECRET_ACCESS_KEY", "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")
     aws_account_id: str = os.environ.get("AWS_ACCOUNT_ID", "481955878483")
     sqs_queue_name: str = os.environ.get("SQS_QUEUE_NAME", "TriggerCallQueue")
 
