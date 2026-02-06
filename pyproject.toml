@@ -1,0 +1,8 @@
+[project]
+name = "outbound-call-gateway"
+version = "0.1.0"
+description = "LiveKit SIP <-> Ultravox bridge + SQS trigger worker"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["lk_ultravox_bridge"]
