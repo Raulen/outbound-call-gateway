@@ -28,6 +28,8 @@ class UltravoxCallClient:
         body = {
             "systemPrompt": prompt,
             "voice": self._cfg.ultravox_voice,
+            "firstSpeaker": "FIRST_SPEAKER_AGENT",
+            "recordingEnabled": True,
             "medium": {
                 "serverWebSocket": {
                     "inputSampleRate": self._cfg.sample_rate,
