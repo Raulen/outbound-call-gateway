@@ -4,7 +4,11 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Optional, Dict, Any
+
+from dotenv import load_dotenv
+
+# Load .env before importing BridgeConfig and other modules that depend on environment.
+load_dotenv(override=True)
 
 from .config import BridgeConfig
 from .logging_utils import ConfigDumper
@@ -24,63 +28,57 @@ class TriggerCallProcessor:
         self._log = log
         self._parser = TriggerCallMessageParser()
         self._uv = UltravoxCallClient(cfg, log)
-        self._dialer = LiveKitSipDialer(cfg, log)
-
-    def build_ultravox_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        md = payload.get("metadata") or {}
-
-        call_id = md.get("callId") or payload.get("callId") or payload.get("id")
-
-        return {
-            "organizationId": payload.get("organizationId"),
-            "tenantId": payload.get("tenantId"),
-            "workflowId": md.get("workflowId"),
-            "campaignId": md.get("campaignId"),
-            "customerId": md.get("customerId"),
-            "callId": call_id,
-            "userId": md.get("userId"),
-            "transport": "ULTRAVOX_SIP",
-        }
+        self._dialer = LiveKitSipDialer(log)
 
     async def process_body(self, body: str) -> None:
+        self._log.debug("[SQS] processing raw message body length=%d", len(body))
         payload = json.loads(body)
-        msg = self._parser.parse(payload)
+
+        try:
+            msg = self._parser.parse(payload)
+        except Exception as e:
+            self._log.error("[SQS] failed to parse TRIGGER_CALL payload: %s", e)
+            raise
 
         to_number = msg.primary_phone_number()
         system_prompt = msg.metadata.prompt_text
 
-        room_name = f"call-{uuid.uuid4().hex[:6]}"
-        self._log.info("[SQS] TRIGGER_CALL id=%s tenantId=%s orgId=%s to=%s room=%s",
-                       msg.id, msg.tenant_id, msg.organization_id, to_number, room_name)
+        profile = self._cfg.resolve_profile(to_number)
 
-        agent = BridgeAgent(self._cfg, self._log, room_name)
+        room_name = f"call-{uuid.uuid4().hex[:6]}"
+        self._log.info(
+            "[SQS] TRIGGER_CALL received id=%s tenantId=%s orgId=%s to=%s room=%s country=%s phoneCount=%d",
+            msg.id,
+            msg.tenant_id,
+            msg.organization_id,
+            to_number,
+            room_name,
+            profile.country_code,
+            len(msg.metadata.phone_numbers),
+        )
+
+        agent = BridgeAgent(self._cfg, self._log, room_name, profile)
         await agent.connect_livekit()
 
-        self._log.info(payload)
+        self._log.info("[SQS] creating Ultravox call for id=%s room=%s", msg.id, room_name)
+        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt)
 
-        metadata = self.build_ultravox_metadata(payload)
-
-        self._log.info(metadata)
-
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, metadata=metadata)
-
-        dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number))
-        self._log.info("[SQS] dialing started in background")
+        dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
+        self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
 
         try:
             await agent.run_bridge(uv_join_url)
+            self._log.info("[SQS] audio bridge finished for id=%s room=%s to=%s", msg.id, room_name, to_number)
         finally:
             try:
                 await dial_task
-            except Exception as e:
-                self._log.exception("[SQS] dial task failed: %r", e)
+            except Exception:
+                self._log.exception("[SQS] dial task failed for id=%s room=%s to=%s", msg.id, room_name, to_number)
 
 
 async def main() -> None:
     cfg = BridgeConfig()
 
-    cfg.require("LIVEKIT_API_KEY", cfg.livekit_api_key)
-    cfg.require("LIVEKIT_API_SECRET", cfg.livekit_api_secret)
     cfg.require("ULTRAVOX_API_KEY", cfg.ultravox_api_key)
     cfg.require("ULTRAVOX_VOICE", cfg.ultravox_voice)
 
@@ -91,20 +89,24 @@ async def main() -> None:
     consumer = SqsLongPollConsumer(sqs, queue_url, log)
     processor = TriggerCallProcessor(cfg, log)
 
-    log.info("[SQS] long polling queueUrl=%s", queue_url)
+    log.info("[SQS] starting long polling worker queueUrl=%s", queue_url)
 
     while True:
         msgs = await asyncio.to_thread(consumer.receive, 1, 20, 300)
         if not msgs:
+            log.debug("[SQS] long poll returned no messages")
             continue
 
+        log.debug("[SQS] long poll returned %d message(s)", len(msgs))
+
         for m in msgs:
+            log.info("[SQS] received message receiptHandlePrefix=%s bodyLength=%d", m.receipt_handle[:10], len(m.body))
             try:
                 await processor.process_body(m.body)
                 await asyncio.to_thread(consumer.delete, m.receipt_handle)
-                log.info("[SQS] deleted message")
-            except Exception as e:
-                log.exception("[SQS] processing failed (message will return after visibility timeout): %r", e)
+                log.info("[SQS] deleted message receiptHandlePrefix=%s", m.receipt_handle[:10])
+            except Exception:
+                log.exception("[SQS] message processing failed; it will be retried after visibility timeout")
 
 
 if __name__ == "__main__":

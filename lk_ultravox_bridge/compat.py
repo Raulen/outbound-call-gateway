@@ -17,14 +17,6 @@ log = logging.getLogger("lk-ultravox-bridge")
 
 _cfg = BridgeConfig()
 
-LIVEKIT_URL = _cfg.livekit_url
-LIVEKIT_WSS_URL = _cfg.livekit_wss_url
-LIVEKIT_API_KEY = _cfg.livekit_api_key
-LIVEKIT_API_SECRET = _cfg.livekit_api_secret
-
-SIP_TRUNK_ID = _cfg.sip_trunk_id
-SIP_FROM_NUMBER = _cfg.sip_from_number
-
 ULTRAVOX_API_KEY = _cfg.ultravox_api_key
 ULTRAVOX_CALLS_URL = _cfg.ultravox_calls_url
 ULTRAVOX_VOICE = _cfg.ultravox_voice
@@ -43,8 +35,9 @@ def dump_effective_config():
     ConfigDumper(_cfg, log).dump_effective_config()
 
 
-def generate_livekit_token(room: str, identity: str) -> str:
-    return LiveKitTokenFactory(_cfg).generate_token(room, identity)
+def generate_livekit_token(room: str, identity: str, to_number: str) -> str:
+    profile = _cfg.resolve_profile(to_number)
+    return LiveKitTokenFactory(profile).generate_token(room, identity)
 
 
 async def create_ultravox_ws_call(system_prompt: Optional[str] = None) -> str:
@@ -52,12 +45,14 @@ async def create_ultravox_ws_call(system_prompt: Optional[str] = None) -> str:
 
 
 async def dial_out_livekit(room_name: str, to_number: str):
-    return await LiveKitSipDialer(_cfg, log).dial_out(room_name, to_number)
+    profile = _cfg.resolve_profile(to_number)
+    return await LiveKitSipDialer(log).dial_out(room_name, to_number, profile)
 
 
 class BridgeAgent(_BridgeAgent):
-    def __init__(self, room_name: str):
-        super().__init__(_cfg, log, room_name)
+    def __init__(self, room_name: str, to_number: str):
+        profile = _cfg.resolve_profile(to_number)
+        super().__init__(_cfg, log, room_name, profile)
 
 
 async def main():
@@ -67,8 +62,6 @@ async def main():
     parser.add_argument("--room", help="Room name. If omitted, uses a generated room for outbound or a fixed room for inbound.")
     args = parser.parse_args()
 
-    require_env("LIVEKIT_API_KEY", LIVEKIT_API_KEY)
-    require_env("LIVEKIT_API_SECRET", LIVEKIT_API_SECRET)
     require_env("ULTRAVOX_API_KEY", ULTRAVOX_API_KEY)
     require_env("ULTRAVOX_VOICE", ULTRAVOX_VOICE)
 
@@ -81,10 +74,13 @@ async def main():
         await sqs_main()
         return
 
+    if args.mode == "outbound" and not args.to:
+        raise SystemExit("--to is required for outbound single-call mode")
+
     room_name = args.room or (f"test-call-{uuid.uuid4().hex[:6]}" if args.mode == "outbound" else "asterisk-inbound-test")
     log.info("Starting mode=%s room=%s", args.mode, room_name)
 
-    agent = BridgeAgent(room_name)
+    agent = BridgeAgent(room_name, args.to or "+550000000000")
     await agent.connect_livekit()
 
     uv_join_url = await create_ultravox_ws_call()

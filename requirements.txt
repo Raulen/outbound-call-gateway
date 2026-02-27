@@ -3,3 +3,4 @@ websockets>=12.0
 boto3>=1.34.0
 livekit>=0.12.0
 livekit-api>=0.8.0
+python-dotenv>=1.0.0
