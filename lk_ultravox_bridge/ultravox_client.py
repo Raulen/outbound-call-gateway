@@ -34,6 +34,9 @@ class UltravoxCallClient:
             },
         }
 
+        if metadata is not None:
+            body["metadata"] = metadata
+
         headers = {"X-API-Key": self._cfg.ultravox_api_key, "Content-Type": "application/json"}
 
         prompt_len = len(prompt) if prompt is not None else 0
