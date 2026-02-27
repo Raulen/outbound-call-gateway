@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
 
@@ -30,15 +31,25 @@ class TriggerCallProcessor:
         self._uv = UltravoxCallClient(cfg, log)
         self._dialer = LiveKitSipDialer(log)
 
-    async def process_body(self, body: str) -> None:
-        self._log.debug("[SQS] processing raw message body length=%d", len(body))
-        payload = json.loads(body)
+    def build_ultravox_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        md = payload.get("metadata") or {}
 
-        try:
-            msg = self._parser.parse(payload)
-        except Exception as e:
-            self._log.error("[SQS] failed to parse TRIGGER_CALL payload: %s", e)
-            raise
+        call_id = md.get("callId") or payload.get("callId") or payload.get("id")
+
+        return {
+            "organizationId": payload.get("organizationId"),
+            "tenantId": payload.get("tenantId"),
+            "workflowId": md.get("workflowId"),
+            "campaignId": md.get("campaignId"),
+            "customerId": md.get("customerId"),
+            "callId": call_id,
+            "userId": md.get("userId"),
+            "transport": "ULTRAVOX_SIP",
+        }
+
+    async def process_body(self, body: str) -> None:
+        payload = json.loads(body)
+        msg = self._parser.parse(payload)
 
         to_number = msg.primary_phone_number()
         system_prompt = msg.metadata.prompt_text
@@ -60,8 +71,15 @@ class TriggerCallProcessor:
         agent = BridgeAgent(self._cfg, self._log, room_name, profile)
         await agent.connect_livekit()
 
+        self._log.info(payload)
+
+        metadata = self.build_ultravox_metadata(payload)
+
+        self._log.info(metadata)
+
         self._log.info("[SQS] creating Ultravox call for id=%s room=%s", msg.id, room_name)
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt)
+
+        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, metadata=metadata)
 
         dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
         self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
