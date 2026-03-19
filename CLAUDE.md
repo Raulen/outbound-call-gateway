@@ -138,7 +138,7 @@ Semântica (`lk_ultravox_bridge/sqs_worker.py`, `lk_ultravox_bridge/sqs_consumer
    - Valida `resp.status_code < 300`, caso contrário loga o body de erro e levanta exceção.
    - Lê `joinUrl` e `callId` do JSON de resposta.
 6. Cria um dial-out SIP para o número de destino via `LiveKitSipDialer.dial_out`:
-   - Usa `api.LiveKitAPI` com `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
+   - Usa `api.LiveKitAPI` como async context manager (`async with`) para garantir que a `aiohttp.ClientSession` interna seja sempre fechada ao final da chamada.
    - Constrói `CreateSIPParticipantRequest` com `sip_trunk_id`, `sip_call_to`, `sip_number`, `room_name` e configura `wait_until_answered=True`, `krisp_enabled=True`.
    - Aguarda a criação do participante SIP e loga IDs/tempos.
 7. Quando o participante SIP se conecta e publica um track de áudio remoto, o handler `track_subscribed` em `BridgeAgent.connect_livekit`:
@@ -159,7 +159,7 @@ Semântica (`lk_ultravox_bridge/sqs_worker.py`, `lk_ultravox_bridge/sqs_consumer
     - Se o participante SIP desconectar, o handler `participant_disconnected` em `BridgeAgent.connect_livekit` detecta identidades prefixadas com `"sip-"` e seta `stop_evt`.
     - Se a sala LiveKit desconectar, o handler `disconnected` também seta `stop_evt`.
     - `_livekit_to_ultravox` e `_ultravox_to_livekit` chamam `stop_evt.set()` em seus `finally`, garantindo que o bridge pare em caso de erro.
-11. Após `AudioBridge.run` retornar, `BridgeAgent.run_bridge` finaliza e `TriggerCallProcessor.process_body` retorna sem erro.
+11. Após `AudioBridge.run` retornar, `BridgeAgent.run_bridge` executa um bloco `finally` que chama `room.disconnect()`, garantindo que a conexão RTC seja encerrada independentemente de sucesso ou erro. Então `TriggerCallProcessor.process_body` retorna sem erro.
 12. O loop do worker então chama `SqsLongPollConsumer.delete(receipt_handle)` para **ack/deletar** a mensagem SQS.
 
 ## Happy path: CLI outbound/inbound direto (sem SQS)
@@ -231,9 +231,12 @@ flowchart TD
 ## LiveKit / SIP
 
 - **Falha no CreateSIPParticipant**:
-  - `LiveKitSipDialer.dial_out` chama `lk.sip.create_sip_participant(req)` e não envolve isso em `try/except` local; qualquer exceção sobe.
+  - `LiveKitSipDialer.dial_out` usa `async with api.LiveKitAPI(...)` e envolve `create_sip_participant` em `try/except`; exceção é logada e reerguida.
   - Na CLI (`compat.main`), `dial_out_livekit` roda em uma task de background; exceções são capturadas e logadas com `log.exception("[Main] dial task failed: %r", e)`, sem parar explicitamente o bridge.
   - No SQS worker, `dial_out` também é executado em task; exceções são logadas em `TriggerCallProcessor.process_body` e **não** interrompem explicitamente o loop principal, mas podem fazer a task de dial-out falhar enquanto o bridge segue.
+- **Vazamento de recursos após chamadas** (corrigido):
+  - `LiveKitSipDialer.dial_out` usava `api.LiveKitAPI` sem fechar, acumulando `aiohttp.ClientSession` abertas a cada chamada. Corrigido com `async with`.
+  - `BridgeAgent.run_bridge` não desconectava a sala RTC após o bridge, acumulando conexões LiveKit abertas. Corrigido: `room.disconnect()` é chamado em bloco `finally`.
 - **Desconexão do participante SIP ou da sala**:
   - Handlers em `BridgeAgent.connect_livekit`:
     - `participant_disconnected`: se `identity` começa com `"sip-"`, loga e chama `self._stop.set()`.
