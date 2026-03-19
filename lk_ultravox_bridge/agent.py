@@ -78,10 +78,17 @@ class BridgeAgent:
             raise RuntimeError("Remote track ready event set, but track is None")
 
         self._log.info("[Bridge] starting audio bridge room=%s", self.room_name)
-        await AudioBridge(self._cfg, self._log).run(
-            join_url=ultravox_join_url,
-            remote_audio_track=self.remote_audio_track,
-            audio_source=self.session.audio_source,
-            stop_evt=self._stop,
-        )
-        self._log.info("[Bridge] audio bridge completed room=%s stopFlag=%s", self.room_name, self._stop.is_set())
+        try:
+            await AudioBridge(self._cfg, self._log).run(
+                join_url=ultravox_join_url,
+                remote_audio_track=self.remote_audio_track,
+                audio_source=self.session.audio_source,
+                stop_evt=self._stop,
+            )
+            self._log.info("[Bridge] audio bridge completed room=%s stopFlag=%s", self.room_name, self._stop.is_set())
+        finally:
+            try:
+                await self.session.room.disconnect()
+                self._log.info("[Bridge] LiveKit room disconnected room=%s", self.room_name)
+            except Exception:
+                self._log.warning("[Bridge] error disconnecting LiveKit room=%s", self.room_name, exc_info=True)

@@ -32,8 +32,6 @@ class LiveKitSipDialer:
     async def dial_out(self, room_name: str, to_number: str, profile: CountryProfile) -> None:
         profile.validate()
 
-        lk = api.LiveKitAPI(profile.livekit_url, profile.livekit_api_key, profile.livekit_api_secret)
-
         req = api.CreateSIPParticipantRequest(
             sip_trunk_id=profile.sip_trunk_id,
             sip_call_to=to_number,
@@ -52,7 +50,8 @@ class LiveKitSipDialer:
         )
 
         try:
-            resp = await lk.sip.create_sip_participant(req)
+            async with api.LiveKitAPI(profile.livekit_url, profile.livekit_api_key, profile.livekit_api_secret) as lk:
+                resp = await lk.sip.create_sip_participant(req)
         except Exception:
             self._log.error(
                 "[LiveKit][SIP] failed to create SIP participant to=%s room=%s",
