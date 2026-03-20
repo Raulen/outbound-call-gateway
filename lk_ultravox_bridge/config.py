@@ -22,10 +22,12 @@ class CountryProfile:
     livekit_api_secret: str
     sip_trunk_id: str
     sip_from_number: str
+    ultravox_voice: str  # e.g. ULTRAVOX_VOICE_BR or ULTRAVOX_VOICE_CL
 
     def validate(self) -> None:
         for attr in ("livekit_url", "livekit_wss_url", "livekit_api_key",
-                     "livekit_api_secret", "sip_trunk_id", "sip_from_number"):
+                     "livekit_api_secret", "sip_trunk_id", "sip_from_number",
+                     "ultravox_voice"):
             if not getattr(self, attr):
                 env_key = f"{attr.upper()}_{self.country_code}"
                 raise SystemExit(f"Missing required env var for {self.country_code}: {env_key}")
@@ -33,6 +35,8 @@ class CountryProfile:
 
 def _build_profile(country_code: str, prefix: str) -> CountryProfile:
     cc = country_code
+    # Per-country voice takes priority; falls back to the global ULTRAVOX_VOICE.
+    voice = os.environ.get(f"ULTRAVOX_VOICE_{cc}") or os.environ.get("ULTRAVOX_VOICE", "")
     return CountryProfile(
         country_code=cc,
         prefix=prefix,
@@ -42,6 +46,7 @@ def _build_profile(country_code: str, prefix: str) -> CountryProfile:
         livekit_api_secret=os.environ.get(f"LIVEKIT_API_SECRET_{cc}", ""),
         sip_trunk_id=os.environ.get(f"SIP_TRUNK_ID_{cc}", ""),
         sip_from_number=os.environ.get(f"SIP_FROM_NUMBER_{cc}", ""),
+        ultravox_voice=voice,
     )
 
 

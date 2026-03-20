@@ -79,7 +79,7 @@ class TriggerCallProcessor:
 
         self._log.info("[SQS] creating Ultravox call for id=%s room=%s", msg.id, room_name)
 
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, metadata=metadata)
+        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, voice=profile.ultravox_voice, metadata=metadata)
 
         dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
         self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
@@ -98,7 +98,6 @@ async def main() -> None:
     cfg = BridgeConfig()
 
     cfg.require("ULTRAVOX_API_KEY", cfg.ultravox_api_key)
-    cfg.require("ULTRAVOX_VOICE", cfg.ultravox_voice)
 
     ConfigDumper(cfg, log).dump_effective_config()
 

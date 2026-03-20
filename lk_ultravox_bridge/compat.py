@@ -40,8 +40,8 @@ def generate_livekit_token(room: str, identity: str, to_number: str) -> str:
     return LiveKitTokenFactory(profile).generate_token(room, identity)
 
 
-async def create_ultravox_ws_call(system_prompt: Optional[str] = None) -> str:
-    return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(system_prompt=system_prompt)
+async def create_ultravox_ws_call(system_prompt: Optional[str] = None, *, voice: Optional[str] = None) -> str:
+    return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(system_prompt=system_prompt, voice=voice)
 
 
 async def dial_out_livekit(room_name: str, to_number: str):
@@ -63,7 +63,6 @@ async def main():
     args = parser.parse_args()
 
     require_env("ULTRAVOX_API_KEY", ULTRAVOX_API_KEY)
-    require_env("ULTRAVOX_VOICE", ULTRAVOX_VOICE)
 
     dump_effective_config()
 
@@ -80,10 +79,13 @@ async def main():
     room_name = args.room or (f"test-call-{uuid.uuid4().hex[:6]}" if args.mode == "outbound" else "asterisk-inbound-test")
     log.info("Starting mode=%s room=%s", args.mode, room_name)
 
-    agent = BridgeAgent(room_name, args.to or "+550000000000")
+    to_number = args.to or "+550000000000"
+    profile = _cfg.resolve_profile(to_number)
+
+    agent = BridgeAgent(room_name, to_number)
     await agent.connect_livekit()
 
-    uv_join_url = await create_ultravox_ws_call()
+    uv_join_url = await create_ultravox_ws_call(voice=profile.ultravox_voice)
 
     if args.mode == "outbound":
         dial_task = asyncio.create_task(dial_out_livekit(room_name, args.to))

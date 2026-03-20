@@ -18,16 +18,20 @@ class UltravoxCallClient:
             self,
             system_prompt: Optional[str] = None,
             *,
+            voice: Optional[str] = None,
             metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         self._cfg.require("ULTRAVOX_API_KEY", self._cfg.ultravox_api_key)
-        self._cfg.require("ULTRAVOX_VOICE", self._cfg.ultravox_voice)
+
+        resolved_voice = voice or self._cfg.ultravox_voice
+        if not resolved_voice:
+            raise SystemExit("Missing required voice: set ULTRAVOX_VOICE_BR/ULTRAVOX_VOICE_CL or ULTRAVOX_VOICE")
 
         prompt = system_prompt if system_prompt is not None else self._cfg.ultravox_system_prompt
 
         body = {
             "systemPrompt": prompt,
-            "voice": self._cfg.ultravox_voice,
+            "voice": resolved_voice,
             "firstSpeaker": "FIRST_SPEAKER_USER",
             "recordingEnabled": True,
             "medium": {
@@ -45,7 +49,7 @@ class UltravoxCallClient:
         headers = {"X-API-Key": self._cfg.ultravox_api_key, "Content-Type": "application/json"}
 
         self._log.info("[Ultravox][REST] POST %s voice=%s inputSR=%d outputSR=%d",
-                       self._cfg.ultravox_calls_url, self._cfg.ultravox_voice, self._cfg.sample_rate, self._cfg.sample_rate)
+                       self._cfg.ultravox_calls_url, resolved_voice, self._cfg.sample_rate, self._cfg.sample_rate)
 
         t0 = time.time()
         async with httpx.AsyncClient(timeout=30.0) as client:

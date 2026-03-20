@@ -20,7 +20,7 @@ class ConfigDumper:
 
         for prefix, profile in c.profiles.items():
             self._log.info(
-                "[%s prefix=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s",
+                "[%s prefix=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s VOICE=%s",
                 profile.country_code,
                 prefix,
                 profile.livekit_url,
@@ -28,6 +28,7 @@ class ConfigDumper:
                 _mask(profile.livekit_api_key),
                 profile.sip_trunk_id,
                 profile.sip_from_number,
+                profile.ultravox_voice or "(not set)",
             )
 
         self._log.info("ULTRAVOX_CALLS_URL=%s", c.ultravox_calls_url)
