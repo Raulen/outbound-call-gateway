@@ -43,6 +43,7 @@ O mapa de profiles é construído em `config.py` no momento do import (`_PROFILE
 
 - Ultravox: `ULTRAVOX_API_KEY`, `ULTRAVOX_CALLS_URL`, `ULTRAVOX_VOICE`, `ULTRAVOX_SYSTEM_PROMPT`
 - Áudio: `SAMPLE_RATE` (int, default `48000`), `CHANNELS` (int, default `1`), `FRAME_MS` (int, default `20`)
+- Jitter buffer: `MAX_BUFFER_FRAMES` (int, default `5` = 100ms), `KEEP_BUFFER_FRAMES` (int, default `2` = 40ms) — controla o descarte de frames antigos na direção Ultravox→LiveKit para evitar delay acumulativo
 - AWS / SQS: `AWS_REGION`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ACCOUNT_ID`, `SQS_QUEUE_NAME`
 
 ### Validações explícitas via `require` / `validate`
@@ -334,11 +335,11 @@ Baseado em `lk_ultravox_bridge/message_models.py`:
     - Cada frame de `event.frame.data` é enviado como payload binário bruto no WebSocket Ultravox.
   - Ultravox &rarr; LiveKit:
     - `_ultravox_to_livekit` calcula `samples_per_frame = SAMPLE_RATE * (FRAME_MS / 1000)`, `bytes_per_frame = samples_per_frame * 2 * CHANNELS`.
-    - Acumula bytes em um buffer e, sempre que houver `bytes_per_frame`, cria um `rtc.AudioFrame` e o injeta via `audio_source.capture_frame`.
-- Mensagens de controle:
-  - Se Ultravox enviar texto JSON com `{"type": "playbackClearBuffer"}`, o código:
-    - Chama `audio_source.clear_queue()`.
-    - Limpa o buffer local.
+    - Acumula bytes em um buffer com leitura por offset (`buf_offset`): frames são extraídos avançando o offset (O(1) por frame), e a compactação do buffer (`del buf[:buf_offset]`) acontece uma única vez após todos os frames disponíveis serem consumidos, evitando shifts O(n) repetidos no hot path de áudio.
+    - **Jitter buffer / descarte de frames**: após cada `buf.extend(msg)`, se o buffer exceder `MAX_BUFFER_FRAMES * bytes_per_frame`, os frames mais antigos são descartados (alinhado ao frame boundary) e apenas os últimos `KEEP_BUFFER_FRAMES` frames são mantidos. Isso evita delay acumulativo causado por stalls de rede ou backpressure do `capture_frame`. Drops são logados como `[UV->LK] buffer overflow` com contagem acumulada.
+- Mensagens de controle (barge-in):
+  - Ultravox sinaliza interrupção do usuário (barge-in) enviando um comando clear-buffer. O nome do evento já foi observado em duas formas: `"playbackClearBuffer"` (camelCase) e `"playback_clear_buffer"` (snake_case). O código aceita ambas.
+  - Ao receber, chama `audio_source.clear_queue()` e limpa o buffer local, cortando imediatamente o áudio do agente que ainda não foi reproduzido.
   - Outras mensagens JSON são apenas logadas (`[Ultravox][WS][data]`).
 
 ## Timeouts e parâmetros operacionais
@@ -350,7 +351,7 @@ Baseado em `lk_ultravox_bridge/message_models.py`:
 - Ultravox REST:
   - `httpx.AsyncClient(timeout=30.0)` é usado para `POST` em `ULTRAVOX_CALLS_URL`.
 - Ultravox WebSocket:
-  - `websockets.connect(join_url, max_size=None, ping_interval=20, ping_timeout=20, close_timeout=5)`.
+  - `websockets.connect(join_url, max_size=None, ping_interval=5, ping_timeout=10, close_timeout=5)`. Conexão morta é detectada em no máximo ~15s (antes era ~40s).
   - `max_size=None` permite mensagens sem limite de tamanho imposto pelo cliente.
 - LiveKit:
   - Timeouts de conexão/RTC são os defaults da biblioteca `livekit.rtc`. Valores específicos não aparecem no código. **Não confirmado no código.**

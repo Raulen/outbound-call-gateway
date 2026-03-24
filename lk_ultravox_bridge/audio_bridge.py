@@ -21,11 +21,15 @@ class AudioBridge:
 
         t0 = time.time()
         try:
+            # ping_interval/ping_timeout control how fast we detect a dead
+            # Ultravox WS.  Previous values (20/20) meant up to 40s of
+            # silence before the connection was considered lost.  With 5/10
+            # a dead link is detected within ~15s at most.
             async with websockets.connect(
                 join_url,
                 max_size=None,
-                ping_interval=20,
-                ping_timeout=20,
+                ping_interval=5,
+                ping_timeout=10,
                 close_timeout=5,
             ) as ws:
                 self._log.info("[Ultravox][WS] connected elapsedMs=%d", int((time.time() - t0) * 1000))
@@ -105,13 +109,29 @@ class AudioBridge:
         samples_per_frame = int(self._cfg.sample_rate * (self._cfg.frame_ms / 1000.0))
         bytes_per_frame = samples_per_frame * 2 * self._cfg.channels
 
+        # Thresholds to prevent accumulative delay.  When the buffer exceeds
+        # max_buffer_bytes we discard the oldest audio, keeping only the most
+        # recent keep_buffer_bytes.  The cut is always frame-aligned so we
+        # never split a PCM sample in half.
+        max_buffer_bytes = bytes_per_frame * self._cfg.max_buffer_frames
+        keep_buffer_bytes = bytes_per_frame * self._cfg.keep_buffer_frames
+        frames_dropped_total = 0
+
         buf = bytearray()
+        # Offset-based reading: instead of deleting from the front of buf on
+        # every frame (O(n) shift), we advance buf_offset and compact once
+        # after all available frames have been extracted.  This turns N
+        # per-frame shifts into a single compaction per WS message.
+        buf_offset = 0
         frames = 0
         bytes_recv = 0
         first_audio = True
         last_log = time.time()
 
-        self._log.info("[UV->LK] stream start samplesPerFrame=%d bytesPerFrame=%d", samples_per_frame, bytes_per_frame)
+        self._log.info(
+            "[UV->LK] stream start samplesPerFrame=%d bytesPerFrame=%d maxBufFrames=%d keepBufFrames=%d",
+            samples_per_frame, bytes_per_frame, self._cfg.max_buffer_frames, self._cfg.keep_buffer_frames,
+        )
 
         try:
             async for msg in ws:
@@ -123,21 +143,55 @@ class AudioBridge:
                         first_audio = False
                         self._log.info("[UV->LK] first audio chunk bytes=%d (bufferBytes=%d)", len(msg), len(buf))
 
-                    while len(buf) >= bytes_per_frame:
-                        chunk = bytes(buf[:bytes_per_frame])
-                        del buf[:bytes_per_frame]
+                    available = len(buf) - buf_offset
+
+                    # Guard against accumulative delay: if the buffer grew
+                    # beyond the threshold (e.g. network burst after a stall),
+                    # discard oldest frames so playback jumps back to real-time
+                    # instead of replaying stale audio with growing lag.
+                    if available > max_buffer_bytes:
+                        excess = available - keep_buffer_bytes
+                        # Align to frame boundary so we never cut mid-sample.
+                        excess = (excess // bytes_per_frame) * bytes_per_frame
+                        dropped_frames = excess // bytes_per_frame
+                        dropped_ms = dropped_frames * self._cfg.frame_ms
+                        buf_offset += excess
+                        available -= excess
+                        frames_dropped_total += dropped_frames
+                        self._log.warning(
+                            "[UV->LK] buffer overflow: dropped %d frames (%dms) to recover real-time "
+                            "(availableBefore=%d availableAfter=%d droppedTotal=%d)",
+                            dropped_frames, dropped_ms, available + excess, available, frames_dropped_total,
+                        )
+
+                    # Extract all complete frames using offset (O(1) per frame).
+                    while available >= bytes_per_frame:
+                        chunk = buf[buf_offset : buf_offset + bytes_per_frame]
+                        buf_offset += bytes_per_frame
+                        available -= bytes_per_frame
 
                         frame = rtc.AudioFrame.create(self._cfg.sample_rate, self._cfg.channels, samples_per_frame)
                         dst_bytes = frame.data.cast("B")
-                        dst_bytes[:len(chunk)] = chunk
+                        dst_bytes[:bytes_per_frame] = chunk
                         await audio_source.capture_frame(frame)
                         frames += 1
+
+                    # Compact once: remove all consumed bytes in a single shift
+                    # instead of shifting per frame.  If buf_offset == len(buf)
+                    # the buffer is fully consumed — just reset it to avoid any
+                    # copy at all.
+                    if buf_offset > 0:
+                        if buf_offset >= len(buf):
+                            buf.clear()
+                        else:
+                            del buf[:buf_offset]
+                        buf_offset = 0
 
                     now = time.time()
                     if now - last_log >= 2.0:
                         kbps = (bytes_recv * 8) / (now - last_log) / 1000.0
-                        self._log.info("[UV->LK] ok frames=%d recvBytes=%d bufferBytes=%d approxKbps=%.1f",
-                                       frames, bytes_recv, len(buf), kbps)
+                        self._log.info("[UV->LK] ok frames=%d recvBytes=%d bufferBytes=%d approxKbps=%.1f droppedTotal=%d",
+                                       frames, bytes_recv, len(buf), kbps, frames_dropped_total)
                         frames = 0
                         bytes_recv = 0
                         last_log = now
@@ -148,10 +202,17 @@ class AudioBridge:
                         self._log.warning("[UV->LK] non-JSON text message: %r", msg)
                         continue
 
-                    if data.get("type") == "playbackClearBuffer":
+                    # Ultravox signals barge-in (user interrupted the agent)
+                    # by sending a clear-buffer command.  The event name has
+                    # been observed in both camelCase ("playbackClearBuffer")
+                    # and snake_case ("playback_clear_buffer") across API
+                    # versions, so we accept either form.
+                    msg_type = data.get("type", "")
+                    if msg_type in ("playbackClearBuffer", "playback_clear_buffer"):
                         audio_source.clear_queue()
                         buf.clear()
-                        self._log.info("[UV->LK] playbackClearBuffer -> cleared LK queue + local buffer")
+                        buf_offset = 0
+                        self._log.info("[UV->LK] %s -> cleared LK queue + local buffer", msg_type)
                     else:
                         self._log.info("[Ultravox][WS][data] %s", data)
         finally:

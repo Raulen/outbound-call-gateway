@@ -68,6 +68,13 @@ class BridgeConfig:
     channels: int = int(os.environ.get("CHANNELS", "1"))
     frame_ms: int = int(os.environ.get("FRAME_MS", "20"))
 
+    # Jitter buffer thresholds (in number of frames).
+    # When the receive buffer exceeds max_buffer_frames, old audio is discarded
+    # to prevent accumulative playback delay caused by network bursts or
+    # backpressure stalls.  Only the most recent keep_buffer_frames are retained.
+    max_buffer_frames: int = int(os.environ.get("MAX_BUFFER_FRAMES", "5"))   # 100ms at 20ms/frame
+    keep_buffer_frames: int = int(os.environ.get("KEEP_BUFFER_FRAMES", "2")) # 40ms at 20ms/frame
+
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
     aws_profile: str = os.environ.get("AWS_PROFILE", "")
     aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "")
