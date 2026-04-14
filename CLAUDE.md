@@ -208,7 +208,6 @@ flowchart TD
 | `lk_ultravox_bridge/message_models.py` | Modelo e parser da mensagem `TRIGGER_CALL` | `TriggerCallMessage`, `TriggerCallMetadata`, `PhoneNumber`, `TriggerCallMessageParser.parse` | Define o contrato esperado da mensagem, valida `messageType=="TRIGGER_CALL"` e `metadata.subject.prompt.text`, constrói o número primário e campos de metadados. |
 | `lk_ultravox_bridge/config.py` | Configuração de runtime via env vars | `BridgeConfig`, `CountryProfile`, `BridgeConfig.resolve_profile` | `CountryProfile` agrupa os 6 campos LiveKit+SIP por país (`_BR` para +55, `_CL` para +56). `BridgeConfig` contém config compartilhada (Ultravox, AWS, áudio) e `resolve_profile(to_number)` seleciona o profile correto pelo prefixo. |
 | `lk_ultravox_bridge/logging_utils.py` | Dump de configuração para logs | `ConfigDumper.dump_effective_config` | Loga ambos os `CountryProfile` (BR e CL) e config compartilhada; aplica mascaramento parcial para chaves de API sensíveis. |
-| `lk_ultravox_bridge/cli.py` | CLI alternativo/antigo | `main_async`, `main` | Implementa interface semelhante à de `compat.py`, mas não é referenciado por `__main__` nem por `bridge.py`; uso atual em produção **não confirmado no código**. |
 | `lk_ultravox_bridge/__init__.py` | Não avaliado aqui | Não usado diretamente no fluxo descrito | Não confirmado no código. |
 
 
@@ -293,8 +292,6 @@ flowchart TD
   - `python bridge.py` faz o mesmo (`bridge.py` importa `lk_ultravox_bridge.compat.main` e o executa em `asyncio.run`).
 - **SQS worker dedicado**:
   - `python -m lk_ultravox_bridge.sqs_worker` executa `lk_ultravox_bridge/sqs_worker.py` diretamente.
-- **CLI alternativo (`lk_ultravox_bridge/cli.py`)**:
-  - Implementa outro CLI, mas não é referenciado pelos entrypoints acima. Uso em produção **não confirmado no código**.
 
 ## Contrato da mensagem SQS TRIGGER_CALL
 
