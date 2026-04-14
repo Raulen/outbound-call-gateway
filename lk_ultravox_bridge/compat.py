@@ -73,9 +73,6 @@ async def main():
         await sqs_main()
         return
 
-    if args.mode == "outbound" and not args.to:
-        raise SystemExit("--to is required for outbound single-call mode")
-
     room_name = args.room or (f"test-call-{uuid.uuid4().hex[:6]}" if args.mode == "outbound" else "asterisk-inbound-test")
     log.info("Starting mode=%s room=%s", args.mode, room_name)
 
