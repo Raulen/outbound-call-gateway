@@ -23,6 +23,7 @@ class TriggerCallMetadata:
     phone_numbers: List[PhoneNumber]
     prompt_text: str
     greeting_message: Optional[str]
+    voice_id: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class TriggerCallMessageParser:
             phone_numbers=phone_numbers,
             prompt_text=str(prompt_text),
             greeting_message=(prompt.get("greetingMessage")),
+            voice_id=(md.get("voiceId")),
         )
 
         return TriggerCallMessage(

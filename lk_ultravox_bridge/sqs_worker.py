@@ -77,9 +77,14 @@ class TriggerCallProcessor:
 
         self._log.info(metadata)
 
-        self._log.info("[SQS] creating Ultravox call for id=%s room=%s", msg.id, room_name)
+        voice = msg.metadata.voice_id or profile.ultravox_voice
+        voice_source = "trigger" if msg.metadata.voice_id else "profile"
+        self._log.info(
+            "[SQS] creating Ultravox call for id=%s room=%s voice=%s voiceSource=%s",
+            msg.id, room_name, voice, voice_source,
+        )
 
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, voice=profile.ultravox_voice, metadata=metadata)
+        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, voice=voice, metadata=metadata)
 
         dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
         self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
