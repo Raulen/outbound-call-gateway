@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Optional, Dict, Any
 
@@ -18,6 +19,7 @@ from .message_models import TriggerCallMessageParser
 from .ultravox_client import UltravoxCallClient
 from .livekit_client import LiveKitSipDialer
 from .agent import BridgeAgent
+from .audio_bridge import AudioBridge
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sqs-worker")
@@ -86,17 +88,28 @@ class TriggerCallProcessor:
 
         uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, voice=voice, metadata=metadata)
 
-        dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
-        self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
+        # Pre-warm the Ultravox WebSocket BEFORE starting the SIP dial so
+        # that the WS handshake + Ultravox cold-start happen in parallel
+        # with phone ringing instead of after pickup.  Reduces "answered ->
+        # agent speaks" latency typically by 500ms-1.5s.
+        prewarm_t0 = time.time()
+        async with AudioBridge.connect_ws(uv_join_url) as uv_ws:
+            self._log.info(
+                "[SQS] Ultravox WS pre-warmed id=%s room=%s elapsedMs=%d",
+                msg.id, room_name, int((time.time() - prewarm_t0) * 1000),
+            )
 
-        try:
-            await agent.run_bridge(uv_join_url)
-            self._log.info("[SQS] audio bridge finished for id=%s room=%s to=%s", msg.id, room_name, to_number)
-        finally:
+            dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
+            self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)
+
             try:
-                await dial_task
-            except Exception:
-                self._log.exception("[SQS] dial task failed for id=%s room=%s to=%s", msg.id, room_name, to_number)
+                await agent.run_bridge(uv_join_url, ws=uv_ws)
+                self._log.info("[SQS] audio bridge finished for id=%s room=%s to=%s", msg.id, room_name, to_number)
+            finally:
+                try:
+                    await dial_task
+                except Exception:
+                    self._log.exception("[SQS] dial task failed for id=%s room=%s to=%s", msg.id, room_name, to_number)
 
 
 async def main() -> None:

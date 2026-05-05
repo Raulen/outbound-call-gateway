@@ -16,56 +16,74 @@ class AudioBridge:
         self._cfg = cfg
         self._log = log
 
-    async def run(self, *, join_url: str, remote_audio_track: rtc.RemoteAudioTrack, audio_source: rtc.AudioSource, stop_evt: asyncio.Event) -> None:
-        self._log.info("[Bridge] Remote track ready -> connecting to Ultravox WS")
+    @staticmethod
+    def connect_ws(join_url: str):
+        # ping_interval/ping_timeout control how fast we detect a dead
+        # Ultravox WS.  Previous values (20/20) meant up to 40s of silence
+        # before the connection was considered lost.  With 5/10 a dead link
+        # is detected within ~15s at most.
+        return websockets.connect(
+            join_url,
+            max_size=None,
+            ping_interval=5,
+            ping_timeout=10,
+            close_timeout=5,
+        )
 
+    async def run(
+        self,
+        *,
+        join_url: str,
+        remote_audio_track: rtc.RemoteAudioTrack,
+        audio_source: rtc.AudioSource,
+        stop_evt: asyncio.Event,
+        ws=None,
+    ) -> None:
+        if ws is not None:
+            self._log.info("[Bridge] Remote track ready -> using pre-opened Ultravox WS")
+            await self._run_streams(ws, remote_audio_track, audio_source, stop_evt)
+            return
+
+        self._log.info("[Bridge] Remote track ready -> connecting to Ultravox WS")
         t0 = time.time()
         try:
-            # ping_interval/ping_timeout control how fast we detect a dead
-            # Ultravox WS.  Previous values (20/20) meant up to 40s of
-            # silence before the connection was considered lost.  With 5/10
-            # a dead link is detected within ~15s at most.
-            async with websockets.connect(
-                join_url,
-                max_size=None,
-                ping_interval=5,
-                ping_timeout=10,
-                close_timeout=5,
-            ) as ws:
+            async with self.connect_ws(join_url) as ws_local:
                 self._log.info("[Ultravox][WS] connected elapsedMs=%d", int((time.time() - t0) * 1000))
-
-                t_in = asyncio.create_task(self._livekit_to_ultravox(ws, remote_audio_track, stop_evt))
-                t_out = asyncio.create_task(self._ultravox_to_livekit(ws, audio_source, stop_evt))
-                t_stop = asyncio.create_task(stop_evt.wait())
-
-                done, pending = await asyncio.wait({t_in, t_out, t_stop}, return_when=asyncio.FIRST_COMPLETED)
-
-                winner = None
-                if t_stop in done:
-                    winner = "stop_event"
-                    self._log.info("[Bridge] stop event triggered; shutting down audio bridge")
-                elif t_in in done:
-                    winner = "lk_to_uv"
-                    self._log.info("[Bridge] LiveKit -> Ultravox task finished first; stopping audio bridge")
-                elif t_out in done:
-                    winner = "uv_to_lk"
-                    self._log.info("[Bridge] Ultravox -> LiveKit task finished first; stopping audio bridge")
-
-                for task in pending:
-                    task.cancel()
-
-                for task in done:
-                    if task in (t_in, t_out):
-                        exc = task.exception()
-                        if exc:
-                            raise exc
-
-                self._log.info("[Bridge] finished (stop=%s winner=%s)", stop_evt.is_set(), winner)
+                await self._run_streams(ws_local, remote_audio_track, audio_source, stop_evt)
         except Exception:
             self._log.error("[Ultravox][WS] connection or streaming failed", exc_info=True)
             raise
         finally:
             self._log.info("[Ultravox][WS] connection closed")
+
+    async def _run_streams(self, ws, remote_audio_track: rtc.RemoteAudioTrack, audio_source: rtc.AudioSource, stop_evt: asyncio.Event) -> None:
+        t_in = asyncio.create_task(self._livekit_to_ultravox(ws, remote_audio_track, stop_evt))
+        t_out = asyncio.create_task(self._ultravox_to_livekit(ws, audio_source, stop_evt))
+        t_stop = asyncio.create_task(stop_evt.wait())
+
+        done, pending = await asyncio.wait({t_in, t_out, t_stop}, return_when=asyncio.FIRST_COMPLETED)
+
+        winner = None
+        if t_stop in done:
+            winner = "stop_event"
+            self._log.info("[Bridge] stop event triggered; shutting down audio bridge")
+        elif t_in in done:
+            winner = "lk_to_uv"
+            self._log.info("[Bridge] LiveKit -> Ultravox task finished first; stopping audio bridge")
+        elif t_out in done:
+            winner = "uv_to_lk"
+            self._log.info("[Bridge] Ultravox -> LiveKit task finished first; stopping audio bridge")
+
+        for task in pending:
+            task.cancel()
+
+        for task in done:
+            if task in (t_in, t_out):
+                exc = task.exception()
+                if exc:
+                    raise exc
+
+        self._log.info("[Bridge] finished (stop=%s winner=%s)", stop_evt.is_set(), winner)
 
     async def _livekit_to_ultravox(self, ws, remote_audio_track: rtc.RemoteAudioTrack, stop_evt: asyncio.Event) -> None:
         audio_stream = rtc.AudioStream.from_track(
