@@ -146,6 +146,16 @@ class AudioBridge:
         first_audio = True
         last_log = time.time()
 
+        # Watchdog: if Ultravox stops sending anything for too long the
+        # session is dead from the agent's perspective even though the WS
+        # is still nominally alive.  In that case the user is on the phone
+        # listening to silence with no agent.  We force-stop the bridge so
+        # the SIP call ends instead of hanging open.
+        last_ws_msg_at = time.time()
+        watchdog_task = asyncio.create_task(
+            self._uv_silence_watchdog(stop_evt, lambda: last_ws_msg_at)
+        )
+
         self._log.info(
             "[UV->LK] stream start samplesPerFrame=%d bytesPerFrame=%d maxBufFrames=%d keepBufFrames=%d",
             samples_per_frame, bytes_per_frame, self._cfg.max_buffer_frames, self._cfg.keep_buffer_frames,
@@ -153,6 +163,7 @@ class AudioBridge:
 
         try:
             async for msg in ws:
+                last_ws_msg_at = time.time()
                 if isinstance(msg, (bytes, bytearray)):
                     bytes_recv += len(msg)
                     buf.extend(msg)
@@ -234,5 +245,21 @@ class AudioBridge:
                     else:
                         self._log.info("[Ultravox][WS][data] %s", data)
         finally:
+            watchdog_task.cancel()
             self._log.info("[UV->LK] stream stopped")
             stop_evt.set()
+
+    async def _uv_silence_watchdog(self, stop_evt: asyncio.Event, last_msg_getter, threshold_s: float = 30.0, check_interval_s: float = 5.0) -> None:
+        try:
+            while not stop_evt.is_set():
+                await asyncio.sleep(check_interval_s)
+                silent_for = time.time() - last_msg_getter()
+                if silent_for >= threshold_s:
+                    self._log.warning(
+                        "[UV->LK] watchdog: no Ultravox message in %.1fs (threshold=%.0fs); aborting call",
+                        silent_for, threshold_s,
+                    )
+                    stop_evt.set()
+                    return
+        except asyncio.CancelledError:
+            pass

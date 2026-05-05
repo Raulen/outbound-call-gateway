@@ -70,7 +70,7 @@ class BridgeAgent:
         if not self.session:
             raise RuntimeError("Connect LiveKit first")
 
-        self._log.info("[Bridge] run_bridge start joinUrl=%s prewarmed=%s", ultravox_join_url, ws is not None)
+        self._log.info("[Bridge] run_bridge start joinUrl=%s", ultravox_join_url)
         self._log.info("[Bridge] Waiting for remote SIP audio track...")
         await self._remote_track_ready.wait()
 
