@@ -20,9 +20,10 @@ class ConfigDumper:
 
         for prefix, profile in c.profiles.items():
             self._log.info(
-                "[%s prefix=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s VOICE=%s",
+                "[%s prefix=%s provider=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s VOICE=%s",
                 profile.country_code,
                 prefix,
+                profile.provider,
                 profile.livekit_url,
                 profile.livekit_wss_url,
                 _mask(profile.livekit_api_key),

@@ -58,13 +58,13 @@ class TriggerCallProcessor:
 
         room_name = f"call-{uuid.uuid4().hex[:6]}"
         self._log.info(
-            "[SQS] TRIGGER_CALL received id=%s tenantId=%s orgId=%s to=%s room=%s country=%s phoneCount=%d",
+            "[SQS] TRIGGER_CALL received id=%s tenantId=%s orgId=%s to=%s room=%s provider=%s phoneCount=%d",
             msg.id,
             msg.tenant_id,
             msg.organization_id,
             to_number,
             room_name,
-            profile.country_code,
+            profile.provider,
             len(msg.metadata.phone_numbers),
         )
 

@@ -16,6 +16,7 @@ class CountryProfile:
 
     country_code: str    # e.g. "BR" or "CL"
     prefix: str          # e.g. "+55" or "+56"
+    provider: str        # e.g. "twilio" or "switch"
     livekit_url: str
     livekit_wss_url: str
     livekit_api_key: str
@@ -33,13 +34,14 @@ class CountryProfile:
                 raise SystemExit(f"Missing required env var for {self.country_code}: {env_key}")
 
 
-def _build_profile(country_code: str, prefix: str) -> CountryProfile:
+def _build_profile(country_code: str, prefix: str, provider: str) -> CountryProfile:
     cc = country_code
     # Per-country voice takes priority; falls back to the global ULTRAVOX_VOICE.
     voice = os.environ.get(f"ULTRAVOX_VOICE_{cc}") or os.environ.get("ULTRAVOX_VOICE", "")
     return CountryProfile(
         country_code=cc,
         prefix=prefix,
+        provider=provider,
         livekit_url=os.environ.get(f"LIVEKIT_URL_{cc}", ""),
         livekit_wss_url=os.environ.get(f"LIVEKIT_WSS_URL_{cc}", ""),
         livekit_api_key=os.environ.get(f"LIVEKIT_API_KEY_{cc}", ""),
@@ -52,8 +54,8 @@ def _build_profile(country_code: str, prefix: str) -> CountryProfile:
 
 # Built once at module load (after load_dotenv).
 _PROFILE_MAP: dict[str, CountryProfile] = {
-    "+55": _build_profile("BR", "+55"),
-    "+56": _build_profile("CL", "+56"),
+    "+55": _build_profile("BR", "+55", "twilio"),
+    "+56": _build_profile("CL", "+56", "switch"),
 }
 
 
@@ -87,11 +89,14 @@ class BridgeConfig:
             raise SystemExit(f"Missing required env var: {name}")
 
     def resolve_profile(self, to_number: str) -> CountryProfile:
-        for prefix, profile in _PROFILE_MAP.items():
-            if to_number.startswith(prefix):
-                profile.validate()
-                return profile
-        raise ValueError(f"[SIP] No profile configured for number prefix: {to_number[:5]}...")
+        # +56 routes to Switch (CL); everything else (incl. +55) routes to Twilio (BR) as fallback.
+        cl = _PROFILE_MAP["+56"]
+        if to_number.startswith(cl.prefix):
+            cl.validate()
+            return cl
+        fallback = _PROFILE_MAP["+55"]
+        fallback.validate()
+        return fallback
 
     @property
     def profiles(self) -> dict[str, CountryProfile]:
