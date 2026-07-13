@@ -11,15 +11,51 @@ from .config import BridgeConfig
 # Appended to every system prompt when voicemail hang-up is enabled.  Twilio
 # Elastic SIP Trunking cannot do answering machine detection, so the model is
 # the only thing in the pipeline that hears the voicemail greeting — this
-# instruction turns it into the detector.  Kept in English on purpose: it is
-# an operator instruction, not agent persona, and works for both pt-BR and
-# es-CL calls regardless of the language of the caller-supplied prompt.
+# instruction turns it into the detector.  The guard is written in the call's
+# language (selected by country profile): a large English block at the end of
+# a pt-BR/es-CL prompt can pull the model's generation style (and perceived
+# accent) toward English.  English is only the fallback for unknown countries.
 _VOICEMAIL_GUARD_PROMPT = (
-    "\n\nIMPORTANT: If you determine the call was answered by a voicemail or "
-    "answering machine (a recorded greeting, instructions to leave a message, "
-    "or a beep), do NOT talk to the recording and do NOT leave a message: "
-    "immediately call the hangUp tool to end the call."
+    "\n\nIMPORTANT: If the call is answered by a voicemail/answering machine, "
+    "do NOT talk to the recording and do NOT leave a message: call the hangUp "
+    "tool to end the call. Only do this on unambiguous evidence: a clearly "
+    "pre-recorded greeting, explicit instructions to leave a message, or a "
+    "recording beep. Silence, background noise, background voices or music, a "
+    "distracted or hesitant answer, or someone speaking to another person "
+    "nearby are NOT voicemail — real people often answer this way. When in "
+    "doubt, assume it is a person and simply continue the conversation from "
+    "where it is; never repeat a greeting you have already given, and never "
+    "hang up on mere suspicion."
 )
+
+_VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY = {
+    "BR": (
+        "\n\nIMPORTANTE: Se a ligação for atendida por uma caixa postal ou "
+        "secretária eletrônica, NÃO fale com a gravação e NÃO deixe recado: "
+        "chame a ferramenta hangUp para encerrar a ligação. Só faça isso com "
+        "evidência inequívoca: uma saudação claramente gravada, instruções "
+        "explícitas para deixar recado, ou o bipe de gravação. Silêncio, ruído "
+        "de fundo, vozes ou música ao fundo, uma resposta distraída ou "
+        "hesitante, ou alguém falando com outra pessoa por perto NÃO são caixa "
+        "postal — pessoas reais atendem assim com frequência. Na dúvida, "
+        "assuma que é uma pessoa e simplesmente continue a conversa de onde "
+        "está; nunca repita uma saudação que já fez e nunca desligue por mera "
+        "suspeita."
+    ),
+    "CL": (
+        "\n\nIMPORTANTE: Si la llamada es atendida por un buzón de voz o "
+        "contestador automático, NO hables con la grabación y NO dejes "
+        "mensaje: llama a la herramienta hangUp para terminar la llamada. "
+        "Hazlo solo con evidencia inequívoca: un saludo claramente pregrabado, "
+        "instrucciones explícitas para dejar un mensaje, o el pitido de "
+        "grabación. El silencio, el ruido de fondo, voces o música de fondo, "
+        "una respuesta distraída o vacilante, o alguien hablando con otra "
+        "persona cerca NO son buzón de voz — las personas reales suelen "
+        "contestar así. Ante la duda, asume que es una persona y simplemente "
+        "continúa la conversación donde está; nunca repitas un saludo que ya "
+        "diste y nunca cuelgues por mera sospecha."
+    ),
+}
 
 
 class UltravoxCallClient:
@@ -35,6 +71,8 @@ class UltravoxCallClient:
             metadata: Optional[Dict[str, Any]] = None,
             greeting_message: Optional[str] = None,
             temperature: Optional[float] = None,
+            country_code: Optional[str] = None,
+            language_hint: Optional[str] = None,
     ) -> str:
         self._cfg.require("ULTRAVOX_API_KEY", self._cfg.ultravox_api_key)
 
@@ -44,7 +82,7 @@ class UltravoxCallClient:
 
         prompt = system_prompt if system_prompt is not None else self._cfg.ultravox_system_prompt
         if self._cfg.ultravox_voicemail_hangup:
-            prompt += _VOICEMAIL_GUARD_PROMPT
+            prompt += _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY.get(country_code or "", _VOICEMAIL_GUARD_PROMPT)
 
         # Outbound call: the callee answers and speaks first.  The fallback
         # makes the agent greet anyway if the callee stays silent after
@@ -73,6 +111,12 @@ class UltravoxCallClient:
 
         if self._cfg.ultravox_model:
             body["model"] = self._cfg.ultravox_model
+
+        # BCP47 hint guiding Ultravox ASR and TTS toward the call's language;
+        # without it the platform auto-detects, which we saw drift to the
+        # wrong language on noisy SIP audio.
+        if language_hint:
+            body["languageHint"] = language_hint
 
         if self._cfg.ultravox_voicemail_hangup:
             # Built-in tool the guard prompt relies on.  hangUp's `strict`

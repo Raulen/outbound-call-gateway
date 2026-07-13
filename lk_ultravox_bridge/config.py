@@ -28,6 +28,9 @@ class CountryProfile:
     sip_trunk_id: str
     sip_from_number: str
     ultravox_voice: str  # e.g. ULTRAVOX_VOICE_BR or ULTRAVOX_VOICE_CL
+    # BCP47 hint sent to Ultravox to guide ASR and TTS (e.g. "pt-BR").
+    # Empty = omit the field from the API payload (Ultravox auto-detects).
+    language_hint: str = ""
 
     def validate(self) -> None:
         for attr in ("livekit_url", "livekit_wss_url", "livekit_api_key",
@@ -38,10 +41,14 @@ class CountryProfile:
                 raise SystemExit(f"Missing required env var for {self.country_code}: {env_key}")
 
 
-def _build_profile(country_code: str, prefix: str, provider: str) -> CountryProfile:
+def _build_profile(country_code: str, prefix: str, provider: str,
+                   default_language_hint: str = "") -> CountryProfile:
     cc = country_code
     # Per-country voice takes priority; falls back to the global ULTRAVOX_VOICE.
     voice = os.environ.get(f"ULTRAVOX_VOICE_{cc}") or os.environ.get("ULTRAVOX_VOICE", "")
+    # LANGUAGE_HINT_{CC} overrides the code default; set it to "" to stop
+    # sending the hint (no-deploy rollback switch).
+    language_hint = os.environ.get(f"LANGUAGE_HINT_{cc}", default_language_hint)
     return CountryProfile(
         country_code=cc,
         prefix=prefix,
@@ -53,13 +60,14 @@ def _build_profile(country_code: str, prefix: str, provider: str) -> CountryProf
         sip_trunk_id=os.environ.get(f"SIP_TRUNK_ID_{cc}", ""),
         sip_from_number=os.environ.get(f"SIP_FROM_NUMBER_{cc}", ""),
         ultravox_voice=voice,
+        language_hint=language_hint,
     )
 
 
 # Built once at module load (after load_dotenv).
 _PROFILE_MAP: dict[str, CountryProfile] = {
-    "+55": _build_profile("BR", "+55", "twilio"),
-    "+56": _build_profile("CL", "+56", "switch"),
+    "+55": _build_profile("BR", "+55", "twilio", default_language_hint="pt-BR"),
+    "+56": _build_profile("CL", "+56", "switch", default_language_hint="es-CL"),
 }
 
 
@@ -99,6 +107,12 @@ class BridgeConfig:
     # backpressure stalls.  Only the most recent keep_buffer_frames are retained.
     max_buffer_frames: int = int(os.environ.get("MAX_BUFFER_FRAMES", "5"))   # 100ms at 20ms/frame
     keep_buffer_frames: int = int(os.environ.get("KEEP_BUFFER_FRAMES", "2")) # 40ms at 20ms/frame
+
+    # Maximum simultaneous calls the SQS worker may run.  1 = strictly serial
+    # (the pre-parallelism behavior, always a safe rollback).  Each live call
+    # streams 20ms audio frames continuously, so raise this gradually while
+    # watching CPU.
+    max_concurrent_calls: int = int(os.environ.get("MAX_CONCURRENT_CALLS", "3"))
 
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
     aws_profile: str = os.environ.get("AWS_PROFILE", "")

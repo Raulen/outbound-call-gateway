@@ -4,6 +4,19 @@ import logging
 from .config import BridgeConfig, CountryProfile
 
 
+class CallLogAdapter(logging.LoggerAdapter):
+    """Prefixes every log line with the call's id and room.
+
+    With concurrent calls, lines from different calls interleave in the same
+    log; the prefix keeps every line attributable.  Passed to BridgeAgent so
+    the whole RTC/SIP/audio-bridge stack inherits the context.
+    """
+
+    def process(self, msg, kwargs):
+        ctx = self.extra or {}
+        return f"[call={ctx.get('call_id')} room={ctx.get('room')}] {msg}", kwargs
+
+
 class ConfigDumper:
     def __init__(self, cfg: BridgeConfig, log: logging.Logger):
         self._cfg = cfg
@@ -20,7 +33,7 @@ class ConfigDumper:
 
         for prefix, profile in c.profiles.items():
             self._log.info(
-                "[%s prefix=%s provider=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s VOICE=%s",
+                "[%s prefix=%s provider=%s] LIVEKIT_URL=%s WSS=%s API_KEY=%s SIP_TRUNK=%s FROM=%s VOICE=%s LANG=%s",
                 profile.country_code,
                 prefix,
                 profile.provider,
@@ -30,12 +43,14 @@ class ConfigDumper:
                 profile.sip_trunk_id,
                 profile.sip_from_number,
                 profile.ultravox_voice or "(not set)",
+                profile.language_hint or "(not set)",
             )
 
         self._log.info("ULTRAVOX_CALLS_URL=%s", c.ultravox_calls_url)
         self._log.info("ULTRAVOX_API_KEY=%s", _mask(c.ultravox_api_key))
         self._log.info("ULTRAVOX_VOICE=%s", c.ultravox_voice)
         self._log.info("SAMPLE_RATE=%d CHANNELS=%d FRAME_MS=%d", c.sample_rate, c.channels, c.frame_ms)
+        self._log.info("MAX_CONCURRENT_CALLS=%d", c.max_concurrent_calls)
         self._log.info(
             "AWS_REGION=%s AWS_PROFILE=%s AWS_ACCOUNT_ID=%s SQS_QUEUE_NAME=%s",
             c.aws_region,

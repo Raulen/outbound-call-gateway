@@ -46,12 +46,16 @@ async def create_ultravox_ws_call(
         voice: Optional[str] = None,
         greeting_message: Optional[str] = None,
         temperature: Optional[float] = None,
+        country_code: Optional[str] = None,
+        language_hint: Optional[str] = None,
 ) -> str:
     return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(
         system_prompt=system_prompt,
         voice=voice,
         greeting_message=greeting_message,
         temperature=temperature,
+        country_code=country_code,
+        language_hint=language_hint,
     )
 
 
@@ -105,6 +109,8 @@ async def main():
         voice=(scenario.voice if scenario and scenario.voice else profile.ultravox_voice),
         greeting_message=scenario.greeting_message if scenario else None,
         temperature=scenario.temperature if scenario else None,
+        country_code=profile.country_code,
+        language_hint=profile.language_hint,
     )
 
     if args.mode == "outbound":

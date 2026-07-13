@@ -7,7 +7,7 @@ import logging
 import pytest
 
 import lk_ultravox_bridge.config as config_module
-from lk_ultravox_bridge.logging_utils import ConfigDumper
+from lk_ultravox_bridge.logging_utils import CallLogAdapter, ConfigDumper
 
 from tests.conftest import make_config, make_profile
 
@@ -58,3 +58,19 @@ class TestSecretMasking:
     def test_non_sensitive_context_is_logged(self, dumped_log_text):
         assert "https://test-br.livekit.cloud" in dumped_log_text
         assert "TestQueue" in dumped_log_text
+
+    def test_max_concurrent_calls_is_logged(self, dumped_log_text):
+        assert "MAX_CONCURRENT_CALLS=1" in dumped_log_text
+
+    def test_language_hint_is_logged(self, dumped_log_text):
+        assert "LANG=pt-BR" in dumped_log_text
+
+
+class TestCallLogAdapter:
+    def test_prefixes_every_line_with_call_context(self, caplog):
+        adapter = CallLogAdapter(
+            logging.getLogger("test-call"), {"call_id": "msg-42", "room": "call-abc123"}
+        )
+        with caplog.at_level(logging.INFO):
+            adapter.info("[Bridge] starting audio bridge")
+        assert "[call=msg-42 room=call-abc123] [Bridge] starting audio bridge" in caplog.text

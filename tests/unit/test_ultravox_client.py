@@ -9,7 +9,11 @@ import httpx
 import pytest
 import respx
 
-from lk_ultravox_bridge.ultravox_client import UltravoxCallClient, _VOICEMAIL_GUARD_PROMPT
+from lk_ultravox_bridge.ultravox_client import (
+    UltravoxCallClient,
+    _VOICEMAIL_GUARD_PROMPT,
+    _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY,
+)
 
 from tests.conftest import make_config
 
@@ -70,6 +74,31 @@ class TestRequestContract:
         assert "metadata" not in body
         assert "model" not in body  # empty cfg -> let the API pick its default
         assert "firstSpeaker" not in body  # deprecated in favor of firstSpeakerSettings
+
+    async def test_voicemail_guard_follows_the_call_language(self, calls_api):
+        # A long English block at the end of a pt-BR prompt pulls the model's
+        # generation style (perceived accent) toward English — the guard must
+        # be written in the call's language, selected by country.
+        await make_client().create_ws_call_join_url(system_prompt="Você é a Ana.", country_code="BR")
+        assert sent_body(calls_api)["systemPrompt"] == "Você é a Ana." + _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY["BR"]
+        assert "IMPORTANTE: Se a ligação" in _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY["BR"]
+
+        await make_client().create_ws_call_join_url(system_prompt="Eres Ana.", country_code="CL")
+        assert sent_body(calls_api)["systemPrompt"] == "Eres Ana." + _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY["CL"]
+        assert "IMPORTANTE: Si la llamada" in _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY["CL"]
+
+        # Unknown/absent country falls back to the English guard.
+        await make_client().create_ws_call_join_url(system_prompt="You are Ana.", country_code="XX")
+        assert sent_body(calls_api)["systemPrompt"] == "You are Ana." + _VOICEMAIL_GUARD_PROMPT
+
+    async def test_language_hint_sent_when_provided_and_omitted_otherwise(self, calls_api):
+        await make_client().create_ws_call_join_url(language_hint="pt-BR")
+        assert sent_body(calls_api)["languageHint"] == "pt-BR"
+
+        # Empty/absent hint -> field omitted, Ultravox keeps auto-detecting
+        # (this is the LANGUAGE_HINT_XX="" rollback path).
+        await make_client().create_ws_call_join_url(language_hint="")
+        assert "languageHint" not in sent_body(calls_api)
 
     async def test_explicit_prompt_and_voice_override_config(self, calls_api):
         await make_client().create_ws_call_join_url(

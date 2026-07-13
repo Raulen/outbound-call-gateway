@@ -66,19 +66,29 @@ class BridgeAgent:
         self.session = await connector.connect_and_publish(self.room_name, self.identity, _register_handlers)
         self._log.info("[Bridge] LiveKit session established room=%s identity=%s", self.room_name, self.identity)
 
-    async def run_bridge(self, ultravox_join_url: str, *, ws=None) -> None:
+    async def run_bridge(self, ultravox_join_url: str, *, ws=None,
+                         remote_track_timeout: Optional[float] = None) -> None:
+        """Bridge audio until the call ends, then tear the room down.
+
+        remote_track_timeout bounds the wait for the SIP audio track.  Pass a
+        value when the dial is known to be answered (SQS worker); leave None
+        when waiting indefinitely is intended (CLI inbound mode).
+        """
         if not self.session:
             raise RuntimeError("Connect LiveKit first")
 
-        self._log.info("[Bridge] run_bridge start joinUrl=%s", ultravox_join_url)
-        self._log.info("[Bridge] Waiting for remote SIP audio track...")
-        await self._remote_track_ready.wait()
-
-        if not self.remote_audio_track:
-            raise RuntimeError("Remote track ready event set, but track is None")
-
-        self._log.info("[Bridge] starting audio bridge room=%s", self.room_name)
         try:
+            self._log.info("[Bridge] run_bridge start joinUrl=%s", ultravox_join_url)
+            self._log.info("[Bridge] Waiting for remote SIP audio track...")
+            if remote_track_timeout is not None:
+                await asyncio.wait_for(self._remote_track_ready.wait(), remote_track_timeout)
+            else:
+                await self._remote_track_ready.wait()
+
+            if not self.remote_audio_track:
+                raise RuntimeError("Remote track ready event set, but track is None")
+
+            self._log.info("[Bridge] starting audio bridge room=%s", self.room_name)
             await AudioBridge(self._cfg, self._log).run(
                 join_url=ultravox_join_url,
                 remote_audio_track=self.remote_audio_track,
@@ -88,11 +98,19 @@ class BridgeAgent:
             )
             self._log.info("[Bridge] audio bridge completed room=%s stopFlag=%s", self.room_name, self._stop.is_set())
         finally:
+            await self.teardown()
+
+    async def teardown(self) -> None:
+        """Disconnect the RTC client and delete the room (best-effort).
+
+        Disconnecting only detaches our client; deleting the room is what
+        removes the SIP participant and sends BYE to the trunk when we are
+        the side ending (or abandoning) the call.
+        """
+        if self.session:
             try:
                 await self.session.room.disconnect()
                 self._log.info("[Bridge] LiveKit room disconnected room=%s", self.room_name)
             except Exception:
                 self._log.warning("[Bridge] error disconnecting LiveKit room=%s", self.room_name, exc_info=True)
-            # Disconnecting above only detaches our client; deleting the room
-            # is what hangs up the SIP leg when we are the side ending the call.
-            await LiveKitRoomTerminator(self._log).terminate(self.room_name, self._profile)
+        await LiveKitRoomTerminator(self._log).terminate(self.room_name, self._profile)

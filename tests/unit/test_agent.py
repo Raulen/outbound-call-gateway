@@ -191,3 +191,33 @@ class TestRunBridge:
         agent._remote_track_ready.set()
         await asyncio.wait_for(task, timeout=2.0)
         assert started.is_set()
+
+    async def test_remote_track_timeout_raises_and_tears_down(self, monkeypatch):
+        # SQS worker path: the dial was answered, so a track that never shows
+        # up is an error — bounded wait, then teardown (no leaked room/SIP leg).
+        async def never_run(**kwargs):
+            raise AssertionError("bridge must not start without a track")
+
+        agent, room = await self._prepared_agent(monkeypatch, never_run)
+        agent._remote_track_ready.clear()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await agent.run_bridge("wss://uv.test/join", remote_track_timeout=0.05)
+
+        assert room.disconnect_calls == 1
+        assert FakeTerminator.calls == [("room-test", agent._profile)]
+
+    async def test_no_timeout_waits_indefinitely(self, monkeypatch):
+        # CLI inbound mode passes no timeout and must keep waiting.
+        async def clean_run(**kwargs):
+            pass
+
+        agent, _ = await self._prepared_agent(monkeypatch, clean_run)
+        agent._remote_track_ready.clear()
+
+        task = asyncio.create_task(agent.run_bridge("wss://uv.test/join"))
+        await asyncio.sleep(0.2)
+        assert not task.done()
+
+        agent._remote_track_ready.set()
+        await asyncio.wait_for(task, timeout=2.0)
