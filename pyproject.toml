@@ -6,3 +6,7 @@ requires-python = ">=3.10"
 
 [tool.setuptools]
 packages = ["lk_ultravox_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

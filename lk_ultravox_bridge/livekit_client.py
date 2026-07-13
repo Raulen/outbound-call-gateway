@@ -72,6 +72,31 @@ class LiveKitSipDialer:
         )
 
 
+class LiveKitRoomTerminator:
+    """Deletes the LiveKit room once a call is over.
+
+    room.disconnect() only detaches *our* RTC client; the SIP participant —
+    and the carrier's billable phone leg behind it — stays up until the callee
+    hangs up.  When it is our side that ends the call (voicemail hangUp,
+    silence watchdog, bridge error), deleting the room is what forcefully
+    removes the SIP participant and sends BYE to the trunk.
+    """
+
+    def __init__(self, log: logging.Logger):
+        self._log = log
+
+    async def terminate(self, room_name: str, profile: CountryProfile) -> None:
+        try:
+            async with api.LiveKitAPI(profile.livekit_url, profile.livekit_api_key, profile.livekit_api_secret) as lk:
+                await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+            self._log.info("[LiveKit][API] room deleted room=%s", room_name)
+        except Exception:
+            # Best-effort: the room may already be gone (callee hung up first
+            # and LiveKit closed the empty room).  Teardown failure must never
+            # mask the bridge's own outcome.
+            self._log.warning("[LiveKit][API] failed to delete room=%s", room_name, exc_info=True)
+
+
 @dataclass
 class LiveKitSession:
     room: rtc.Room

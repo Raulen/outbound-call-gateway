@@ -84,7 +84,12 @@ class TriggerCallProcessor:
             msg.id, room_name, voice, voice_source,
         )
 
-        uv_join_url = await self._uv.create_ws_call_join_url(system_prompt=system_prompt, voice=voice, metadata=metadata)
+        uv_join_url = await self._uv.create_ws_call_join_url(
+            system_prompt=system_prompt,
+            voice=voice,
+            metadata=metadata,
+            greeting_message=msg.metadata.greeting_message,
+        )
 
         dial_task = asyncio.create_task(self._dialer.dial_out(room_name, to_number, profile))
         self._log.info("[SQS] LiveKit SIP dial-out started in background id=%s room=%s to=%s", msg.id, room_name, to_number)

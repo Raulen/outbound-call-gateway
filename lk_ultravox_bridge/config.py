@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 
+def _env_flag(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes")
+
+
 @dataclass(frozen=True)
 class CountryProfile:
     """Per-country LiveKit project + SIP trunk configuration."""
@@ -65,6 +69,25 @@ class BridgeConfig:
     ultravox_calls_url: str = os.environ.get("ULTRAVOX_CALLS_URL", "https://api.ultravox.ai/api/calls")
     ultravox_voice: str = os.environ.get("ULTRAVOX_VOICE", "")
     ultravox_system_prompt: str = os.environ.get("ULTRAVOX_SYSTEM_PROMPT", "You are a helpful assistant.")
+    # Ultravox API default is 0 (deterministic), which tends to sound robotic
+    # and repetitive on voice calls.  Valid range: 0-1.
+    ultravox_temperature: float = float(os.environ.get("ULTRAVOX_TEMPERATURE", "0.3"))
+    # Empty = let the API pick its current default model.  Set explicitly to
+    # pin a model version across Ultravox default rollouts.
+    ultravox_model: str = os.environ.get("ULTRAVOX_MODEL", "")
+    # joinTimeout runs from call *creation*, not from SIP answer.  The default
+    # (30s) can expire the joinUrl while the callee's phone is still ringing,
+    # since we create the Ultravox call before dialing out.
+    ultravox_join_timeout: str = os.environ.get("ULTRAVOX_JOIN_TIMEOUT", "60s")
+    # How long the agent waits for the callee to speak after pickup before
+    # greeting first (firstSpeakerSettings.user.fallback.delay).
+    ultravox_greeting_delay: str = os.environ.get("ULTRAVOX_GREETING_DELAY", "4s")
+    # Twilio Elastic SIP Trunking has no AMD, so "answered" includes voicemail.
+    # When enabled, the Ultravox agent itself detects voicemail (via a system
+    # prompt instruction) and ends the call with the built-in hangUp tool.
+    # Prompt-based detection is not telecom-grade AMD; disable here if the
+    # false-positive rate ever hurts more than talking to voicemail does.
+    ultravox_voicemail_hangup: bool = _env_flag("ULTRAVOX_VOICEMAIL_HANGUP", "1")
 
     sample_rate: int = int(os.environ.get("SAMPLE_RATE", "48000"))
     channels: int = int(os.environ.get("CHANNELS", "1"))

@@ -40,8 +40,19 @@ def generate_livekit_token(room: str, identity: str, to_number: str) -> str:
     return LiveKitTokenFactory(profile).generate_token(room, identity)
 
 
-async def create_ultravox_ws_call(system_prompt: Optional[str] = None, *, voice: Optional[str] = None) -> str:
-    return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(system_prompt=system_prompt, voice=voice)
+async def create_ultravox_ws_call(
+        system_prompt: Optional[str] = None,
+        *,
+        voice: Optional[str] = None,
+        greeting_message: Optional[str] = None,
+        temperature: Optional[float] = None,
+) -> str:
+    return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(
+        system_prompt=system_prompt,
+        voice=voice,
+        greeting_message=greeting_message,
+        temperature=temperature,
+    )
 
 
 async def dial_out_livekit(room_name: str, to_number: str):
@@ -60,7 +71,14 @@ async def main():
     parser.add_argument("--mode", choices=["outbound", "inbound"], required=True)
     parser.add_argument("--to", help="E.164 number to dial (outbound mode), e.g. +5511999999999")
     parser.add_argument("--room", help="Room name. If omitted, uses a generated room for outbound or a fixed room for inbound.")
+    parser.add_argument("--scenario", help="Test scenario name (scenarios/<name>.json) overriding prompt/greeting/voice/temperature.")
     args = parser.parse_args()
+
+    scenario = None
+    if args.scenario:
+        from .scenarios import load_scenario
+        scenario = load_scenario(args.scenario)
+        log.info("[Main] using scenario '%s'", scenario.name)
 
     require_env("ULTRAVOX_API_KEY", ULTRAVOX_API_KEY)
 
@@ -82,7 +100,12 @@ async def main():
     agent = BridgeAgent(room_name, to_number)
     await agent.connect_livekit()
 
-    uv_join_url = await create_ultravox_ws_call(voice=profile.ultravox_voice)
+    uv_join_url = await create_ultravox_ws_call(
+        system_prompt=scenario.system_prompt if scenario else None,
+        voice=(scenario.voice if scenario and scenario.voice else profile.ultravox_voice),
+        greeting_message=scenario.greeting_message if scenario else None,
+        temperature=scenario.temperature if scenario else None,
+    )
 
     if args.mode == "outbound":
         dial_task = asyncio.create_task(dial_out_livekit(room_name, args.to))

@@ -8,7 +8,7 @@ from typing import Optional
 from livekit import rtc
 
 from .config import BridgeConfig, CountryProfile
-from .livekit_client import LiveKitTokenFactory, LiveKitRoomConnector, LiveKitSession
+from .livekit_client import LiveKitTokenFactory, LiveKitRoomConnector, LiveKitRoomTerminator, LiveKitSession
 from .audio_bridge import AudioBridge
 
 
@@ -93,3 +93,6 @@ class BridgeAgent:
                 self._log.info("[Bridge] LiveKit room disconnected room=%s", self.room_name)
             except Exception:
                 self._log.warning("[Bridge] error disconnecting LiveKit room=%s", self.room_name, exc_info=True)
+            # Disconnecting above only detaches our client; deleting the room
+            # is what hangs up the SIP leg when we are the side ending the call.
+            await LiveKitRoomTerminator(self._log).terminate(self.room_name, self._profile)
