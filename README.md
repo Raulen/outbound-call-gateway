@@ -76,6 +76,9 @@ FRAME_MS=20
 MAX_BUFFER_FRAMES=5   # discard old audio when the receive buffer exceeds this (100ms at 20ms/frame)
 KEEP_BUFFER_FRAMES=2  # frames kept after a discard (40ms at 20ms/frame)
 
+# SQS worker
+MAX_CONCURRENT_CALLS=3  # simultaneous calls; 1 = strictly serial (safe rollback)
+
 # AWS / SQS
 AWS_REGION=us-east-1
 AWS_PROFILE=<profile>          # used when static keys are not set
@@ -98,6 +101,7 @@ SQS_QUEUE_NAME=TriggerCallQueue
 | `SIP_TRUNK_ID_XX` | yes | LiveKit SIP trunk ID |
 | `SIP_FROM_NUMBER_XX` | yes | Caller ID (E.164) |
 | `ULTRAVOX_VOICE_XX` | yes* | *Satisfied by the global `ULTRAVOX_VOICE` fallback if unset |
+| `LANGUAGE_HINT_XX` | no | BCP47 hint guiding Ultravox ASR/TTS. Code defaults: `pt-BR` (BR), `es-CL` (CL). Set to empty to stop sending the hint (rollback switch) |
 
 **Shared**
 
@@ -117,6 +121,7 @@ SQS_QUEUE_NAME=TriggerCallQueue
 | `FRAME_MS` | `20` | no | |
 | `MAX_BUFFER_FRAMES` | `5` | no | Jitter buffer overflow threshold |
 | `KEEP_BUFFER_FRAMES` | `2` | no | Frames kept after overflow discard |
+| `MAX_CONCURRENT_CALLS` | `3` | SQS only | Simultaneous calls per worker; `1` = serial (rollback switch) |
 | `AWS_REGION` | `us-east-1` | SQS only | |
 | `AWS_PROFILE` | — | SQS only* | *Used when static keys are unset or `none` |
 | `AWS_ACCESS_KEY_ID` | — | no | Static key; overrides profile |
@@ -146,7 +151,9 @@ Or directly:
 python -m lk_ultravox_bridge.sqs_worker
 ```
 
-Message handling: on success the message is deleted; on any error it is **not** deleted and returns to the queue after the visibility timeout (300s). There is no DLQ logic in the code — configure redrive on the queue itself.
+Calls run in parallel up to `MAX_CONCURRENT_CALLS` (default 3); a message is only pulled from the queue when a call slot is free.
+
+Message handling: the message is deleted **as soon as the SIP dial is answered** (retrying after that point would double-call the person). Any failure before answer — parse error, Ultravox REST error, trunk rejection, nobody answered within 90s — leaves the message in the queue, and it returns after the visibility timeout (300s). There is no DLQ logic in the code — configure redrive on the queue itself.
 
 ### Bridge CLI (single call)
 
@@ -180,6 +187,7 @@ A scenario may override `system_prompt`, `greeting_message`, `voice` and `temper
 - **Silence watchdog**: if Ultravox sends nothing over the WebSocket for ≥30s, the bridge ends the call instead of leaving the callee listening to silence.
 - **Room teardown**: when the call ends, the bridge disconnects from the room **and deletes it via the LiveKit API** — deleting the room is what removes the SIP participant and sends BYE to the trunk when our side ends the call (voicemail hang-up, watchdog, error). Best-effort: a failed delete is logged as a warning, never masks the call result.
 - **Call recording** is always enabled on the Ultravox side (`recordingEnabled=True`).
+- **Language**: each call sends a `languageHint` (BCP47) to Ultravox guiding speech recognition and synthesis, taken from the country profile (`pt-BR` for BR, `es-CL` for CL). The voicemail-guard instruction is also written in the call's language. Note: since every prefix other than `+56` falls back to the BR profile, those calls inherit `pt-BR` (consistent with the voice and campaign prompt they already inherit).
 
 ## Tests
 
