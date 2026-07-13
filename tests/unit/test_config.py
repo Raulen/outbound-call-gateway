@@ -81,6 +81,29 @@ class TestCountryProfileValidate:
             profile.validate()
 
 
+class TestBuildProfileLanguageHint:
+    """languageHint guides Ultravox ASR/TTS; LANGUAGE_HINT_{CC} is the
+    no-deploy rollback switch (empty = stop sending the hint)."""
+
+    def test_code_default_used_when_env_absent(self, monkeypatch):
+        monkeypatch.delenv("LANGUAGE_HINT_BR", raising=False)
+        profile = _build_profile("BR", "+55", "twilio", default_language_hint="pt-BR")
+        assert profile.language_hint == "pt-BR"
+
+    def test_env_override_wins_including_empty_kill_switch(self, monkeypatch):
+        monkeypatch.setenv("LANGUAGE_HINT_BR", "pt-PT")
+        profile = _build_profile("BR", "+55", "twilio", default_language_hint="pt-BR")
+        assert profile.language_hint == "pt-PT"
+
+        monkeypatch.setenv("LANGUAGE_HINT_BR", "")
+        profile = _build_profile("BR", "+55", "twilio", default_language_hint="pt-BR")
+        assert profile.language_hint == ""  # empty -> field omitted from the API payload
+
+    def test_language_hint_is_not_required_by_validate(self):
+        # It is a code constant, never a missing-env failure.
+        make_profile(language_hint="").validate()
+
+
 class TestBuildProfileVoiceResolution:
     """_build_profile reads os.environ at call time, so monkeypatch works
     regardless of what .env was loaded at import."""

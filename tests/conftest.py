@@ -33,6 +33,7 @@ def make_profile(**overrides) -> CountryProfile:
         sip_trunk_id="ST_test",
         sip_from_number="+5511999990000",
         ultravox_voice="voice-br-test",
+        language_hint="pt-BR",
     )
     defaults.update(overrides)
     return CountryProfile(**defaults)
@@ -55,6 +56,7 @@ def make_config(**overrides) -> BridgeConfig:
         frame_ms=20,
         max_buffer_frames=5,
         keep_buffer_frames=2,
+        max_concurrent_calls=1,
         aws_region="us-east-1",
         aws_profile="test-profile",
         aws_access_key_id="",
