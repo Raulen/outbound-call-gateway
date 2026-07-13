@@ -172,6 +172,13 @@ class TestProcessBodyHappyPath:
         assert EVENTS == ["answered", "ack", "bridge"]
         assert ack.count == 1
 
+    async def test_finish_line_carries_call_duration(self, processor, caplog):
+        # durationS feeds the Grafana duration panels (LogQL unwrap).
+        import re
+        with caplog.at_level(logging.INFO):
+            await processor.process_body(json.dumps(valid_payload()))
+        assert re.search(r"audio bridge finished .* durationS=\d+\.\d", caplog.text)
+
     async def test_agent_gets_a_call_scoped_logger(self, processor):
         # Concurrent calls interleave in one log; the agent (and everything it
         # builds — RTC, audio bridge, teardown) must log with call context.
@@ -404,6 +411,19 @@ class TestRunWorkerLoopConcurrency:
             await wait_until(lambda: consumer.deleted == ["rh-m1"])
         finally:
             loop_task.cancel()
+
+    async def test_heartbeat_reports_liveness_and_in_flight_gauge(self, caplog):
+        # "[HB] alive" is the line the Grafana worker-down alert watches;
+        # it must appear immediately on loop start, not only after 60s.
+        consumer = QueueOfBodies([])
+        cfg = make_config(max_concurrent_calls=3)
+
+        with caplog.at_level(logging.INFO):
+            loop_task = asyncio.create_task(run_worker_loop(cfg, log, consumer, BlockingProcessor()))
+            try:
+                await wait_until(lambda: "[HB] alive inFlight=0 max=3" in caplog.text)
+            finally:
+                loop_task.cancel()
 
     async def test_processing_failure_does_not_stop_the_loop(self, caplog):
         class ExplodingThenBlockingProcessor(BlockingProcessor):

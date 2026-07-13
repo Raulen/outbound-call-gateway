@@ -1,0 +1,288 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_LOGS",
+      "label": "Loki (Grafana Cloud logs)",
+      "description": "Datasource de logs do stack (grafanacloud-<stack>-logs)",
+      "type": "datasource",
+      "pluginId": "loki"
+    }
+  ],
+  "title": "Outbound Call Gateway",
+  "uid": "outbound-call-gateway",
+  "tags": ["outbound-call-gateway"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "Ambiente",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+        "query": "label_values(env)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Worker vivo (heartbeats 5m)",
+      "description": "Conta linhas [HB] alive nos últimos 5 minutos. 0 = worker morto ou travado.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[HB] alive` [5m]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Chamadas em voo",
+      "description": "Gauge extraído do heartbeat (inFlight=N max=M).",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 4, "y": 0, "w": 10, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(last_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[HB] alive` | regexp `inFlight=(?P<v>[0-9]+)` | unwrap v | __error__=\"\" [$__auto]))",
+          "legendFormat": "em voo"
+        },
+        {
+          "refId": "B",
+          "expr": "max(last_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[HB] alive` | regexp `max=(?P<v>[0-9]+)` | unwrap v | __error__=\"\" [$__auto]))",
+          "legendFormat": "cap (MAX_CONCURRENT_CALLS)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10 }, "min": 0, "decimals": 0 },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "cap (MAX_CONCURRENT_CALLS)" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Falhas",
+      "description": "processamento = mensagem volta para retry; infra = erro de poll SQS / crash de task.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 14, "y": 0, "w": 10, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `processing failed` [$__auto]))",
+          "legendFormat": "processamento"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |~ `receive failed|crashed unexpectedly` [$__auto]))",
+          "legendFormat": "infra"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 30, "drawStyle": "bars" },
+          "min": 0,
+          "decimals": 0,
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Recebidas",
+      "description": "Mensagens TRIGGER_CALL no período do dashboard.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 5, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `TRIGGER_CALL received` [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Atendidas",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 4, "y": 5, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `SIP dial answered` [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Concluídas",
+      "description": "Bridges de áudio que terminaram (a chamada aconteceu de fato).",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 8, "y": 5, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `audio bridge finished` [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Taxa de atendimento",
+      "description": "Atendidas / recebidas no período.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 12, "y": 5, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `SIP dial answered` [$__range])) * 100) / sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `TRIGGER_CALL received` [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "noValue": "-",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 40 },
+              { "color": "green", "value": 70 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Chamadas ao longo do tempo",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 16, "y": 5, "w": 8, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `TRIGGER_CALL received` [$__auto]))",
+          "legendFormat": "recebidas"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `SIP dial answered` [$__auto]))",
+          "legendFormat": "atendidas"
+        }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10 }, "min": 0, "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Duração das chamadas (s)",
+      "description": "Do atendimento ao fim do bridge (durationS no log de conclusão).",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 9, "w": 8, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg(avg_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `audio bridge finished` | regexp `durationS=(?P<v>[0-9.]+)` | unwrap v | __error__=\"\" [$__auto]))",
+          "legendFormat": "média"
+        },
+        {
+          "refId": "B",
+          "expr": "quantile_over_time(0.95, {app=\"outbound-call-gateway\", env=~\"$env\"} |= `audio bridge finished` | regexp `durationS=(?P<v>[0-9.]+)` | unwrap v | __error__=\"\" [$__auto]) by ()",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 }, "min": 0 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tempo até atender (ms)",
+      "description": "elapsedMs do CreateSIPParticipant (inclui o toque do telefone).",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 8, "y": 9, "w": 8, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg(avg_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[LiveKit][SIP] ok` | regexp `elapsedMs=(?P<v>[0-9]+)` | unwrap v | __error__=\"\" [$__auto]))",
+          "legendFormat": "média"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "fillOpacity": 10 }, "min": 0 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Áudio: eventos de qualidade",
+      "description": "buffer overflow = descarte de frames (delay); watchdog = Ultravox mudo ≥30s.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 16, "y": 9, "w": 8, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `buffer overflow` [$__auto]))",
+          "legendFormat": "buffer overflow"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `watchdog` [$__auto]))",
+          "legendFormat": "watchdog (silêncio)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 30, "drawStyle": "bars" }, "min": 0, "decimals": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Warnings & errors",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{app=\"outbound-call-gateway\", env=~\"$env\", level=~\"warning|error\"}"
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true }
+    }
+  ]
+}

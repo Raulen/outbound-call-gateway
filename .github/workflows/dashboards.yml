@@ -1,0 +1,55 @@
+name: Publish Grafana dashboards
+
+# Dashboards-as-code: observability/*.json is the source of truth.
+# Publishing overwrites the dashboard in Grafana, so manual edits made in
+# the UI are lost on the next run — edit the JSON in the repo instead.
+#
+# Required repo configuration (Settings -> Secrets and variables -> Actions):
+#   variable GRAFANA_URL          e.g. https://<stack>.grafana.net
+#   variable GRAFANA_LOKI_DS_UID  UID of the grafanacloud-<stack>-logs datasource
+#   secret   GRAFANA_SA_TOKEN     Grafana service account token (role: Editor)
+
+on:
+  push:
+    branches: [main]
+    paths: ["observability/**"]
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required configuration
+        run: |
+          missing=0
+          [ -n "${{ vars.GRAFANA_URL }}" ] || { echo "::error::repo variable GRAFANA_URL is not set"; missing=1; }
+          [ -n "${{ vars.GRAFANA_LOKI_DS_UID }}" ] || { echo "::error::repo variable GRAFANA_LOKI_DS_UID is not set"; missing=1; }
+          [ -n "${{ secrets.GRAFANA_SA_TOKEN }}" ] || { echo "::error::repo secret GRAFANA_SA_TOKEN is not set"; missing=1; }
+          exit $missing
+
+      - name: Publish dashboards
+        env:
+          GRAFANA_URL: ${{ vars.GRAFANA_URL }}
+          DS_UID: ${{ vars.GRAFANA_LOKI_DS_UID }}
+          GRAFANA_SA_TOKEN: ${{ secrets.GRAFANA_SA_TOKEN }}
+        run: |
+          set -euo pipefail
+          for f in observability/*.json; do
+            echo "--- $f"
+            jq empty "$f"  # fail fast on invalid JSON
+
+            # Render the import-format JSON for the HTTP API: drop the
+            # __inputs block and pin the datasource UID.
+            jq 'del(.__inputs)' "$f" | sed "s/\${DS_LOGS}/${DS_UID}/g" > /tmp/dashboard.json
+
+            jq -n --slurpfile d /tmp/dashboard.json \
+              --arg msg "CI publish ${GITHUB_SHA::7}" \
+              '{dashboard: $d[0], overwrite: true, message: $msg}' \
+            | curl --fail-with-body -sS -X POST "${GRAFANA_URL%/}/api/dashboards/db" \
+                -H "Authorization: Bearer ${GRAFANA_SA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d @-
+            echo
+          done
