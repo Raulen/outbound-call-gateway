@@ -122,6 +122,8 @@ SQS_QUEUE_NAME=TriggerCallQueue
 | `MAX_BUFFER_FRAMES` | `5` | no | Jitter buffer overflow threshold |
 | `KEEP_BUFFER_FRAMES` | `2` | no | Frames kept after overflow discard |
 | `MAX_CONCURRENT_CALLS` | `3` | SQS only | Simultaneous calls per worker; `1` = serial (rollback switch) |
+| `ENVIRONMENT` | `dev` | no | `env` label on shipped logs (`prod` on Render) |
+| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_TOKEN` | — | no | Grafana Cloud log shipping; all three unset = stdout only |
 | `AWS_REGION` | `us-east-1` | SQS only | |
 | `AWS_PROFILE` | — | SQS only* | *Used when static keys are unset or `none` |
 | `AWS_ACCESS_KEY_ID` | — | no | Static key; overrides profile |
@@ -188,6 +190,58 @@ A scenario may override `system_prompt`, `greeting_message`, `voice` and `temper
 - **Room teardown**: when the call ends, the bridge disconnects from the room **and deletes it via the LiveKit API** — deleting the room is what removes the SIP participant and sends BYE to the trunk when our side ends the call (voicemail hang-up, watchdog, error). Best-effort: a failed delete is logged as a warning, never masks the call result.
 - **Call recording** is always enabled on the Ultravox side (`recordingEnabled=True`).
 - **Language**: each call sends a `languageHint` (BCP47) to Ultravox guiding speech recognition and synthesis, taken from the country profile (`pt-BR` for BR, `es-CL` for CL). The voicemail-guard instruction is also written in the call's language. Note: since every prefix other than `+56` falls back to the BR profile, those calls inherit `pt-BR` (consistent with the voice and campaign prompt they already inherit).
+
+## Observability
+
+Logs-first: the worker ships its structured logs to **Grafana Cloud Loki**, and every dashboard metric (funnel, duration, in-flight, errors) is derived from those logs with LogQL. There is no separate metrics pipeline to operate at this scale — `GRAFANA_PROM_*` in `.env` is validated but reserved for when volume justifies it.
+
+Shipping is **optional and non-blocking**: without the env vars below the worker runs stdout-only, exactly as before; with them, a background thread batches lines to Loki and **drops telemetry rather than ever delaying audio**. High-cardinality context (call id, room) stays inside the log line — only `app`, `env` and `level` are stream labels.
+
+```env
+ENVIRONMENT=dev            # label "env" on every log line (set "prod" on Render)
+GRAFANA_LOKI_URL=https://logs-prod-XXX.grafana.net
+GRAFANA_LOKI_USER=<numeric user from the Logs/Loki details page>
+GRAFANA_TOKEN=<access policy token with logs:write>
+```
+
+### Deploying to production (Render checklist)
+
+Set these in the Render service's environment, alongside the app vars from
+[Configuration](#configuration):
+
+| Variable | Value |
+|---|---|
+| `ENVIRONMENT` | `prod` — **required for alerting.** The alert rules only watch `env="prod"`; without this, production logs ship labeled `dev`, mix with local test data in the dashboard, and **no alert ever fires**. |
+| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_TOKEN` | Same values as local `.env` (telemetry write token — not the service account token, which belongs only in GitHub Secrets). |
+
+Local dev machines should NOT set `ENVIRONMENT` (default `dev` keeps test
+calls out of production alerts and dashboards). Adding a staging service
+later is just `ENVIRONMENT=staging` — the `env` label, the dashboard
+variable and the alert filters follow with no code change.
+
+The worker also emits a liveness heartbeat every 60s (`[HB] alive inFlight=N max=M`) and stamps each finished call with `durationS=` — both feed the dashboard and alerts.
+
+### Dashboard
+
+Import `observability/grafana-dashboard.json` (Grafana → Dashboards → New → Import → upload), picking your `grafanacloud-<stack>-logs` datasource when prompted. Panels: worker liveness, in-flight vs cap, failures, call funnel (received/answered/completed/answer rate), calls over time, call duration (avg/p95), time-to-answer, audio-quality events, and a warnings/errors log tail. The `env` variable filters dev/prod.
+
+### Alerts (create once, in Grafana → Alerting)
+
+Contact point: type **Microsoft Teams**, URL from the Teams channel's Workflows webhook. Two rules cover the operation:
+
+**1. Worker down/stuck** — fires when no heartbeat lands for 5 minutes:
+
+```logql
+sum(count_over_time({app="outbound-call-gateway", env="prod"} |= `[HB] alive` [5m])) < 1
+```
+
+**2. Errors** — fires on any processing/infra failure in a 10-minute window:
+
+```logql
+sum(count_over_time({app="outbound-call-gateway", env="prod"} |~ `processing failed|receive failed|crashed unexpectedly` [10m])) > 0
+```
+
+Complement (outside Grafana, no code): a CloudWatch alarm on the queue's `ApproximateAgeOfOldestMessage` catches the pipeline stalling even if the whole observability stack is down.
 
 ## Tests
 

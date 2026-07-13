@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Awaitable, Callable, Dict, Any, Optional
 
@@ -33,6 +34,9 @@ REMOTE_TRACK_TIMEOUT_S = 30.0
 # The poll must survive transient failures — in-flight calls depend on this
 # process staying alive.
 POLL_ERROR_BACKOFF_S = 5.0
+# Liveness heartbeat cadence.  The "[HB] alive" line is what the Grafana
+# "worker is down" alert watches; it also carries the in-flight gauge.
+HEARTBEAT_INTERVAL_S = 60.0
 
 
 class TriggerCallProcessor:
@@ -134,6 +138,7 @@ class TriggerCallProcessor:
             raise
 
         self._log.info("[SQS] SIP dial answered id=%s room=%s to=%s", msg.id, room_name, to_number)
+        answered_at = time.monotonic()
 
         # Point of no return: the callee answered.  From here an SQS redelivery
         # would dial the same person again, so ack (delete) the message now;
@@ -148,7 +153,10 @@ class TriggerCallProcessor:
                 )
 
         await agent.run_bridge(uv_join_url, remote_track_timeout=REMOTE_TRACK_TIMEOUT_S)
-        self._log.info("[SQS] audio bridge finished for id=%s room=%s to=%s", msg.id, room_name, to_number)
+        self._log.info(
+            "[SQS] audio bridge finished for id=%s room=%s to=%s durationS=%.1f",
+            msg.id, room_name, to_number, time.monotonic() - answered_at,
+        )
 
 
 async def run_worker_loop(cfg: BridgeConfig, log: logging.Logger, consumer, processor) -> None:
@@ -159,6 +167,11 @@ async def run_worker_loop(cfg: BridgeConfig, log: logging.Logger, consumer, proc
     clock running, ending in a phantom redelivery.
     """
     in_flight: set = set()
+
+    async def _heartbeat() -> None:
+        while True:
+            log.info("[HB] alive inFlight=%d max=%d", len(in_flight), cfg.max_concurrent_calls)
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
     def _task_done(task: asyncio.Task) -> None:
         in_flight.discard(task)
@@ -180,37 +193,52 @@ async def run_worker_loop(cfg: BridgeConfig, log: logging.Logger, consumer, proc
                 "it will be retried after visibility timeout)"
             )
 
-    while True:
-        while len(in_flight) >= cfg.max_concurrent_calls:
-            await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        while True:
+            while len(in_flight) >= cfg.max_concurrent_calls:
+                await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
 
-        try:
-            msgs = await asyncio.to_thread(consumer.receive, 1, 20, 300)
-        except Exception:
-            # A transient network error must never kill the worker: live calls
-            # run in their own tasks and keep going; we just retry the poll.
-            log.warning(
-                "[SQS] receive failed; retrying in %.0fs", POLL_ERROR_BACKOFF_S, exc_info=True,
-            )
-            await asyncio.sleep(POLL_ERROR_BACKOFF_S)
-            continue
+            try:
+                msgs = await asyncio.to_thread(consumer.receive, 1, 20, 300)
+            except Exception:
+                # A transient network error must never kill the worker: live calls
+                # run in their own tasks and keep going; we just retry the poll.
+                log.warning(
+                    "[SQS] receive failed; retrying in %.0fs", POLL_ERROR_BACKOFF_S, exc_info=True,
+                )
+                await asyncio.sleep(POLL_ERROR_BACKOFF_S)
+                continue
 
-        if not msgs:
-            log.debug("[SQS] long poll returned no messages")
-            continue
+            if not msgs:
+                log.debug("[SQS] long poll returned no messages")
+                continue
 
-        for m in msgs:
-            log.info("[SQS] received message receiptHandlePrefix=%s bodyLength=%d", m.receipt_handle[:10], len(m.body))
-            task = asyncio.create_task(_handle(m))
-            in_flight.add(task)
-            task.add_done_callback(_task_done)
-            log.info("[SQS] call task started inFlight=%d/%d", len(in_flight), cfg.max_concurrent_calls)
+            for m in msgs:
+                log.info("[SQS] received message receiptHandlePrefix=%s bodyLength=%d", m.receipt_handle[:10], len(m.body))
+                task = asyncio.create_task(_handle(m))
+                in_flight.add(task)
+                task.add_done_callback(_task_done)
+                log.info("[SQS] call task started inFlight=%d/%d", len(in_flight), cfg.max_concurrent_calls)
+    finally:
+        hb_task.cancel()
 
 
 async def main() -> None:
     cfg = BridgeConfig()
 
     cfg.require("ULTRAVOX_API_KEY", cfg.ultravox_api_key)
+
+    # Attached to the root logger so every line (worker, bridge, libs) that
+    # reaches stdout also reaches Grafana.  Optional: without GRAFANA_* env
+    # vars the worker runs stdout-only, exactly as before.
+    from .observability import build_loki_handler
+    loki = build_loki_handler(cfg)
+    if loki is not None:
+        logging.getLogger().addHandler(loki)
+        log.info("[Obs] Grafana Loki shipping enabled env=%s", cfg.environment)
+    else:
+        log.info("[Obs] Grafana Loki shipping disabled (GRAFANA_* not set)")
 
     ConfigDumper(cfg, log).dump_effective_config()
 
@@ -224,7 +252,11 @@ async def main() -> None:
         queue_url, cfg.max_concurrent_calls,
     )
 
-    await run_worker_loop(cfg, log, consumer, processor)
+    try:
+        await run_worker_loop(cfg, log, consumer, processor)
+    finally:
+        if loki is not None:
+            loki.close()  # flush pending log batches before the process exits
 
 
 if __name__ == "__main__":

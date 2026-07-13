@@ -114,6 +114,15 @@ class BridgeConfig:
     # watching CPU.
     max_concurrent_calls: int = int(os.environ.get("MAX_CONCURRENT_CALLS", "3"))
 
+    # Observability (Grafana Cloud Loki).  All optional: when unset, the
+    # worker logs to stdout only, exactly as before.  Metrics are derived
+    # from these logs via LogQL — no separate metrics pipeline at this scale
+    # (GRAFANA_PROM_* in .env is reserved for when that changes).
+    environment: str = os.environ.get("ENVIRONMENT", "dev")
+    grafana_loki_url: str = os.environ.get("GRAFANA_LOKI_URL", "")
+    grafana_loki_user: str = os.environ.get("GRAFANA_LOKI_USER", "")
+    grafana_token: str = os.environ.get("GRAFANA_TOKEN", "")
+
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
     aws_profile: str = os.environ.get("AWS_PROFILE", "")
     aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "")

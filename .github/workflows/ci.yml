@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The suite is fully offline and independent of .env (tests/conftest.py),
+      # so no secrets or services are needed here.
+      - name: Run unit tests
+        run: pytest
