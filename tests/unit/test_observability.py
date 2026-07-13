@@ -93,3 +93,17 @@ class TestShipping:
         shipper = make_shipper(CapturingTransport(status_code=500))
         shipper.emit(make_record("boom"))
         shipper.close()  # flush hits HTTP 500 -> stderr note, no exception
+
+    def test_records_from_the_shipping_thread_are_ignored(self):
+        # httpx logs each push at INFO; with the handler on the root logger,
+        # ingesting the shipping thread's own logs would be an infinite
+        # feedback loop (one push per flush, forever) — a real prod incident.
+        import threading
+
+        transport = CapturingTransport()
+        shipper = make_shipper(transport)
+        shipper._thread = threading.current_thread()  # pretend we ARE the shipping thread
+        shipper.emit(make_record("HTTP Request: POST .../loki/api/v1/push", name="httpx"))
+        shipper._thread = None
+        shipper.close()
+        assert transport.requests == []  # nothing queued, nothing shipped
