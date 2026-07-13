@@ -229,6 +229,12 @@ async def main() -> None:
 
     cfg.require("ULTRAVOX_API_KEY", cfg.ultravox_api_key)
 
+    # httpx logs every request at INFO ("HTTP Request: POST ..."), which is
+    # pure noise here: our own structured lines already cover the Ultravox
+    # REST calls, and the Loki pushes would spam stdout on every flush.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Attached to the root logger so every line (worker, bridge, libs) that
     # reaches stdout also reaches Grafana.  Optional: without GRAFANA_* env
     # vars the worker runs stdout-only, exactly as before.

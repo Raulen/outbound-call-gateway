@@ -65,6 +65,11 @@ class LokiShipper(logging.Handler):
     # -- logging.Handler interface -------------------------------------
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Never ingest logs produced by the shipping thread itself (httpx logs
+        # each push at INFO): with the handler on the root logger that would
+        # be a self-feeding loop — every push generating the next log line.
+        if self._thread is not None and threading.current_thread() is self._thread:
+            return
         try:
             item = (int(record.created * 1e9), self.format(record), record.levelname.lower())
             self._queue.put_nowait(item)
