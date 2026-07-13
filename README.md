@@ -61,12 +61,20 @@ ULTRAVOX_API_KEY=<key>
 ULTRAVOX_CALLS_URL=https://api.ultravox.ai/api/calls
 ULTRAVOX_VOICE=<voice-id>      # global fallback; per-country ULTRAVOX_VOICE_XX takes priority
 ULTRAVOX_SYSTEM_PROMPT=You are a helpful assistant.
-ULTRAVOX_VOICEMAIL_HANGUP=1  # agent detects voicemail and hangs up instead of talking to it (default on)
+ULTRAVOX_TEMPERATURE=0.3       # 0-1; the API default (0) sounds robotic/repetitive on voice calls
+ULTRAVOX_MODEL=                # empty = API default; set to pin a model version
+ULTRAVOX_JOIN_TIMEOUT=60s      # counts from call *creation*, not SIP answer — 30s (API default) can expire while still ringing
+ULTRAVOX_GREETING_DELAY=4s     # how long the agent waits for the callee to speak after pickup before greeting first
+ULTRAVOX_VOICEMAIL_HANGUP=1    # agent detects voicemail and hangs up instead of talking to it (default on)
 
 # Audio
 SAMPLE_RATE=16000  # use 16000 for SIP calls — 48000 (the code default) causes resampling artifacts
 CHANNELS=1
 FRAME_MS=20
+
+# Jitter buffer (Ultravox -> LiveKit direction)
+MAX_BUFFER_FRAMES=5   # discard old audio when the receive buffer exceeds this (100ms at 20ms/frame)
+KEEP_BUFFER_FRAMES=2  # frames kept after a discard (40ms at 20ms/frame)
 
 # AWS / SQS
 AWS_REGION=us-east-1
@@ -76,6 +84,47 @@ AWS_SECRET_ACCESS_KEY=<secret> # optional; overrides profile
 AWS_ACCOUNT_ID=<account-id>
 SQS_QUEUE_NAME=TriggerCallQueue
 ```
+
+### Full reference
+
+**Per-country** — replace `XX` with the country code (`BR`, `CL`). All 7 are required for a country to receive calls; validation fails with `SystemExit` on the first missing one when a call routes to that country.
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `LIVEKIT_URL_XX` | yes | LiveKit project HTTPS URL (used by the server API: SIP dial-out, room delete) |
+| `LIVEKIT_WSS_URL_XX` | yes | LiveKit project WSS URL (used by the RTC client) |
+| `LIVEKIT_API_KEY_XX` | yes | |
+| `LIVEKIT_API_SECRET_XX` | yes | |
+| `SIP_TRUNK_ID_XX` | yes | LiveKit SIP trunk ID |
+| `SIP_FROM_NUMBER_XX` | yes | Caller ID (E.164) |
+| `ULTRAVOX_VOICE_XX` | yes* | *Satisfied by the global `ULTRAVOX_VOICE` fallback if unset |
+
+**Shared**
+
+| Variable | Default | Required | Notes |
+|----------|---------|----------|-------|
+| `ULTRAVOX_API_KEY` | — | yes | |
+| `ULTRAVOX_CALLS_URL` | `https://api.ultravox.ai/api/calls` | no | |
+| `ULTRAVOX_VOICE` | — | yes* | *Global voice fallback; required only if some country lacks `ULTRAVOX_VOICE_XX`. SQS `metadata.voiceId` overrides both. |
+| `ULTRAVOX_SYSTEM_PROMPT` | `You are a helpful assistant.` | no | CLI fallback only; SQS calls always use the message's `prompt_text` |
+| `ULTRAVOX_TEMPERATURE` | `0.3` | no | 0–1 |
+| `ULTRAVOX_MODEL` | empty (API default) | no | Pin an Ultravox model version |
+| `ULTRAVOX_JOIN_TIMEOUT` | `60s` | no | joinUrl expiry, counted from call creation |
+| `ULTRAVOX_GREETING_DELAY` | `4s` | no | Silence tolerated after pickup before the agent greets first |
+| `ULTRAVOX_VOICEMAIL_HANGUP` | `1` (on) | no | `1/true/yes` = on; anything else = off |
+| `SAMPLE_RATE` | `48000` | no | **Set `16000` in production** (SIP resampling artifacts at 48kHz) |
+| `CHANNELS` | `1` | no | |
+| `FRAME_MS` | `20` | no | |
+| `MAX_BUFFER_FRAMES` | `5` | no | Jitter buffer overflow threshold |
+| `KEEP_BUFFER_FRAMES` | `2` | no | Frames kept after overflow discard |
+| `AWS_REGION` | `us-east-1` | SQS only | |
+| `AWS_PROFILE` | — | SQS only* | *Used when static keys are unset or `none` |
+| `AWS_ACCESS_KEY_ID` | — | no | Static key; overrides profile |
+| `AWS_SECRET_ACCESS_KEY` | — | no | Static key; overrides profile |
+| `AWS_ACCOUNT_ID` | — | SQS only | Used to build the queue URL |
+| `SQS_QUEUE_NAME` | `TriggerCallQueue` | SQS only | |
+
+"SQS only" = required only when running the SQS worker; the single-call CLI (`--to` / inbound) doesn't need AWS at all.
 
 > **Adding a new country:** add a `_XX` variable block in `.env` (including `ULTRAVOX_VOICE_XX` if a per-country voice is needed) and register the prefix in `_PROFILE_MAP` inside `lk_ultravox_bridge/config.py`.
 
@@ -97,6 +146,8 @@ Or directly:
 python -m lk_ultravox_bridge.sqs_worker
 ```
 
+Message handling: on success the message is deleted; on any error it is **not** deleted and returns to the queue after the visibility timeout (300s). There is no DLQ logic in the code — configure redrive on the queue itself.
+
 ### Bridge CLI (single call)
 
 ```bash
@@ -104,18 +155,31 @@ python -m lk_ultravox_bridge.sqs_worker
 python -m lk_ultravox_bridge --mode outbound --to +5511999999999
 
 # Inbound: wait for SIP calls to arrive in a room
+# (--room defaults to "asterisk-inbound-test" if omitted)
 python -m lk_ultravox_bridge --mode inbound --room my-room
 ```
 
+`python bridge.py` (root script) is an equivalent entry point with the same flags.
+
 ### Test scenarios (dev only)
 
-For quick manual testing without editing `.env` between runs, pass `--scenario <name>` to load `scenarios/<name>.json`:
+For quick manual testing without editing `.env` between runs, pass `--scenario <name>` to load `scenarios/<name>.json` (or pass an explicit path to any `.json` file):
 
 ```bash
 python -m lk_ultravox_bridge --mode outbound --to +5511999999999 --scenario debt_collect
 ```
 
 A scenario may override `system_prompt`, `greeting_message`, `voice` and `temperature` for that call — all fields optional; anything omitted falls back to `.env` / country profile. The scenario's `greeting_message` exercises the same `firstSpeakerSettings` fallback path used by SQS `greetingMessage`. To add a scenario, drop a new JSON file in `scenarios/`.
+
+---
+
+## Call behavior
+
+- **Callee speaks first**: the agent waits `ULTRAVOX_GREETING_DELAY` (default 4s) after pickup; if the callee stays silent, the agent greets first — with the `greetingMessage` from the SQS message / scenario when present, otherwise with a generic greeting prompt.
+- **Voicemail detection** (`ULTRAVOX_VOICEMAIL_HANGUP`, default on): Twilio Elastic SIP Trunking has no AMD, so the model itself is the detector — a guard instruction is appended to the system prompt and the built-in `hangUp` tool is enabled. On recognizing a voicemail greeting/beep, the agent hangs up instead of talking to the recording.
+- **Silence watchdog**: if Ultravox sends nothing over the WebSocket for ≥30s, the bridge ends the call instead of leaving the callee listening to silence.
+- **Room teardown**: when the call ends, the bridge disconnects from the room **and deletes it via the LiveKit API** — deleting the room is what removes the SIP participant and sends BYE to the trunk when our side ends the call (voicemail hang-up, watchdog, error). Best-effort: a failed delete is logged as a warning, never masks the call result.
+- **Call recording** is always enabled on the Ultravox side (`recordingEnabled=True`).
 
 ## Tests
 
@@ -124,8 +188,12 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Unit tests live in `tests/unit/`. The suite is fully offline and independent of `.env` (see the isolation rule in `tests/conftest.py`).
+Unit tests live in `tests/unit/` (131 tests: message contract, country routing, audio bridge, Ultravox REST client via respx, agent event handlers, SQS worker orchestration, log masking). The suite is fully offline and independent of `.env` (see the isolation rule in `tests/conftest.py`).
 
-### Voices 11Labs
+---
 
-7eb7586a-1831-40d1-88a4-8b690004cfb7 
+## Appendix: known voice IDs
+
+| Voice ID | Notes |
+|----------|-------|
+| `7eb7586a-1831-40d1-88a4-8b690004cfb7` | ElevenLabs voice (use as `ULTRAVOX_VOICE` / `ULTRAVOX_VOICE_XX`) |
