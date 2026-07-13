@@ -204,6 +204,21 @@ GRAFANA_LOKI_USER=<numeric user from the Logs/Loki details page>
 GRAFANA_TOKEN=<access policy token with logs:write>
 ```
 
+### Deploying to production (Render checklist)
+
+Set these in the Render service's environment, alongside the app vars from
+[Configuration](#configuration):
+
+| Variable | Value |
+|---|---|
+| `ENVIRONMENT` | `prod` — **required for alerting.** The alert rules only watch `env="prod"`; without this, production logs ship labeled `dev`, mix with local test data in the dashboard, and **no alert ever fires**. |
+| `GRAFANA_LOKI_URL` / `GRAFANA_LOKI_USER` / `GRAFANA_TOKEN` | Same values as local `.env` (telemetry write token — not the service account token, which belongs only in GitHub Secrets). |
+
+Local dev machines should NOT set `ENVIRONMENT` (default `dev` keeps test
+calls out of production alerts and dashboards). Adding a staging service
+later is just `ENVIRONMENT=staging` — the `env` label, the dashboard
+variable and the alert filters follow with no code change.
+
 The worker also emits a liveness heartbeat every 60s (`[HB] alive inFlight=N max=M`) and stamps each finished call with `durationS=` — both feed the dashboard and alerts.
 
 ### Dashboard
