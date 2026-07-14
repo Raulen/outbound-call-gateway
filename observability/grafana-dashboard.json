@@ -272,10 +272,88 @@
       }
     },
     {
+      "type": "stat",
+      "title": "Não atendidas",
+      "description": "SIP 408 — tocou até a operadora desistir.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=no-answer` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Ocupado",
+      "description": "SIP 486/600.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 4, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=busy` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Rejeitadas",
+      "description": "SIP 603 — o cliente recusou a chamada.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 8, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=declined` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Indisponível",
+      "description": "SIP 480 — desligado / fora de área.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 12, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=unavailable` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Número inválido",
+      "description": "SIP 404/484 — higiene da base de números.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 16, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=invalid-number` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Dial travado",
+      "description": "Guarda de 90s estourou — LiveKit não respondeu; investigar se recorrente.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 20, "y": 15, "w": 4, "h": 4 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` |= `reason=dial-timeout` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ligações não realizadas ao longo do tempo (por categoria)",
+      "description": "Curva por categoria, extraída do reason= das linhas de log. Categorias novas aparecem sozinhas.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `[SQS] call not answered` | regexp `reason=(?P<reason>[a-z-]+)` [$__auto]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10 }, "min": 0, "decimals": 0 },
+        "overrides": []
+      }
+    },
+    {
       "type": "logs",
       "title": "Warnings & errors",
       "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
-      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 9 },
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 9 },
       "targets": [
         {
           "refId": "A",
