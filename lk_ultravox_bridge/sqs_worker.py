@@ -17,7 +17,7 @@ from .logging_utils import CallLogAdapter, ConfigDumper
 from .sqs_consumer import SqsClientFactory, SqsQueueResolver, SqsLongPollConsumer
 from .message_models import TriggerCallMessageParser
 from .ultravox_client import UltravoxCallClient
-from .livekit_client import LiveKitSipDialer
+from .livekit_client import CallNotAnsweredError, LiveKitSipDialer
 from .agent import BridgeAgent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -126,13 +126,37 @@ class TriggerCallProcessor:
                 "[SQS] dialing SIP id=%s room=%s to=%s (waiting for answer, timeout=%.0fs)",
                 msg.id, room_name, to_number, DIAL_ANSWER_TIMEOUT_S,
             )
-            await asyncio.wait_for(
-                self._dialer.dial_out(room_name, to_number, profile),
-                timeout=DIAL_ANSWER_TIMEOUT_S,
+            try:
+                await asyncio.wait_for(
+                    self._dialer.dial_out(room_name, to_number, profile),
+                    timeout=DIAL_ANSWER_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError as e:
+                # LiveKit fails an unanswered dial on its own (SIP 408) well
+                # before this guard; hitting it means the API hung.  Own
+                # category so it never contaminates the no-answer metric.
+                raise CallNotAnsweredError("dial-timeout") from e
+        except CallNotAnsweredError as e:
+            # Unreachable callee (no-answer/busy/declined/...): a business
+            # outcome, not an error.  Ack so SQS never redials on a loop —
+            # redial policy belongs to the campaign system.
+            await agent.teardown()
+            self._log.warning(
+                "[SQS] call not answered id=%s room=%s to=%s reason=%s — acking, no retry",
+                msg.id, room_name, to_number, e.reason,
             )
+            if ack is not None:
+                try:
+                    await ack()
+                except Exception:
+                    self._log.exception(
+                        "[SQS] ack failed for unanswered call id=%s room=%s "
+                        "(message may be redelivered)", msg.id, room_name,
+                    )
+            return
         except Exception:
-            # Nobody was reached yet (Ultravox REST error, trunk rejection, or
-            # nobody answered in time): drop whatever SIP leg LiveKit may have
+            # Genuine system error before anyone was reached (Ultravox REST,
+            # trunk auth, network): drop whatever SIP leg LiveKit may have
             # started and let the message be retried.
             await agent.teardown()
             raise

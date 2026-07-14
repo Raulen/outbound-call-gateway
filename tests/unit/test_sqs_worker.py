@@ -240,17 +240,42 @@ class TestProcessBodyErrorSemantics:
         assert FakeAgent.instances[0].torn_down
         assert "bridge" not in EVENTS  # never bridged an unanswered call
 
-    async def test_unanswered_dial_times_out_and_frees_the_worker(self, processor, monkeypatch):
-        # Phone ringing forever must not hang the worker (pre-fix behavior).
+    async def test_unanswered_call_is_acked_not_retried(self, processor, caplog):
+        # Business rule: unreachable callee -> ack and move on.  A 5-minute
+        # visibility loop would redial the same person for days.
+        from lk_ultravox_bridge.livekit_client import CallNotAnsweredError
+
+        processor._dialer = FakeDialer(error=CallNotAnsweredError("no-answer", 408))
+        ack = AckRecorder()
+
+        with caplog.at_level(logging.WARNING):
+            await processor.process_body(json.dumps(valid_payload()), ack)  # must not raise
+
+        assert ack.count == 1                       # deleted -> no redial loop
+        assert FakeAgent.instances[0].torn_down     # SIP leg dropped
+        assert "bridge" not in EVENTS               # never bridged
+        assert "reason=no-answer" in caplog.text
+
+    async def test_hung_dial_times_out_as_its_own_category_and_acks(self, processor, monkeypatch, caplog):
+        # LiveKit fails unanswered dials by itself (SIP 408) long before our
+        # guard; hitting the guard means the API hung — category dial-timeout,
+        # also acked (call didn't happen; no retry loop).
         monkeypatch.setattr(worker_module, "DIAL_ANSWER_TIMEOUT_S", 0.01)
         processor._dialer = FakeDialer(hang=True)
         ack = AckRecorder()
 
-        with pytest.raises(asyncio.TimeoutError):
-            await processor.process_body(json.dumps(valid_payload()), ack)
+        with caplog.at_level(logging.WARNING):
+            await processor.process_body(json.dumps(valid_payload()), ack)  # must not raise
 
-        assert ack.count == 0
+        assert ack.count == 1
         assert FakeAgent.instances[0].torn_down
+        assert "reason=dial-timeout" in caplog.text
+
+    async def test_unanswered_without_ack_callback_does_not_crash(self, processor):
+        from lk_ultravox_bridge.livekit_client import CallNotAnsweredError
+
+        processor._dialer = FakeDialer(error=CallNotAnsweredError("busy", 486))
+        await processor.process_body(json.dumps(valid_payload()))  # no ack -> just returns
 
     async def test_bridge_failure_after_answer_still_acks(self, processor, monkeypatch):
         # The callee answered: a retry would double-call them, so the message

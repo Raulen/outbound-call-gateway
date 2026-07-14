@@ -155,7 +155,11 @@ python -m lk_ultravox_bridge.sqs_worker
 
 Calls run in parallel up to `MAX_CONCURRENT_CALLS` (default 3); a message is only pulled from the queue when a call slot is free.
 
-Message handling: the message is deleted **as soon as the SIP dial is answered** (retrying after that point would double-call the person). Any failure before answer — parse error, Ultravox REST error, trunk rejection, nobody answered within 90s — leaves the message in the queue, and it returns after the visibility timeout (300s). There is no DLQ logic in the code — configure redrive on the queue itself.
+Message handling:
+
+- **Answered** → the message is deleted as soon as the SIP dial is answered (retrying after that point would double-call the person).
+- **Unreachable callee** — no-answer (SIP 408), busy (486/600), declined (603), unavailable/phone off (480), invalid number (404/484), or the 90s dial guard expiring — → the message is **also deleted, with no retry**: these are business outcomes, and a visibility-timeout loop would redial the same person every 5 minutes for days. Redial policy belongs to the campaign system. Each case is logged as `[SQS] call not answered ... reason=<category>` and counted per category on the dashboard. Only 408 has been observed in production; the other SIP mappings follow the standard and every dial failure logs its raw status/code/message so a wrong mapping shows up with evidence.
+- **System errors** (parse error, Ultravox REST failure, trunk auth, network) → the message is NOT deleted and returns after the visibility timeout (300s). There is no DLQ logic in the code — configure redrive on the queue itself.
 
 ### Bridge CLI (single call)
 
