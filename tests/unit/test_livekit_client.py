@@ -22,13 +22,20 @@ log = logging.getLogger("test")
 
 
 class FakeSipError(Exception):
-    """Shape of the SDK's twirp ServerError (status/code/message attrs)."""
+    """Shape of the SDK's TwirpError/ServerError (status/code/message/metadata).
 
-    def __init__(self, status=None, code=None, message=""):
+    Real-world note: `status` is the HTTP/twirp layer; the SIP code lives in
+    metadata['sip_status_code'] (verified live with a SIP 480 arriving as
+    status=429).
+    """
+
+    def __init__(self, status=None, code=None, message="", metadata=None):
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        if metadata is not None:
+            self.metadata = metadata
 
 
 def install_failing_sip_api(monkeypatch, error: Exception) -> None:
@@ -91,7 +98,7 @@ class TestDialFailureClassification:
     """Unreachable-callee outcomes become CallNotAnsweredError (acked by the
     worker, never retried); anything else keeps the retry semantics."""
 
-    @pytest.mark.parametrize("status,reason", [
+    @pytest.mark.parametrize("sip_status,reason", [
         (408, "no-answer"),
         (486, "busy"),
         (600, "busy"),
@@ -100,18 +107,41 @@ class TestDialFailureClassification:
         (404, "invalid-number"),
         (484, "invalid-number"),
     ])
-    async def test_unreachable_sip_statuses_map_to_categories(self, monkeypatch, caplog, status, reason):
-        install_failing_sip_api(monkeypatch, FakeSipError(status=status, message="twirp error"))
+    async def test_sip_status_in_metadata_maps_to_category(self, monkeypatch, caplog, sip_status, reason):
+        # Real-world shape (seen live with 480): twirp status=429, SIP code
+        # only inside metadata.
+        install_failing_sip_api(monkeypatch, FakeSipError(
+            status=429, code="resource_exhausted",
+            message=f"twirp error unknown: INVITE failed: sip status: {sip_status}: X",
+            metadata={"sip_status_code": str(sip_status), "sip_status": "X"},
+        ))
 
         with caplog.at_level(logging.WARNING):
             with pytest.raises(CallNotAnsweredError) as exc_info:
                 await LiveKitSipDialer(log).dial_out("room-x", "+5511999998888", make_profile())
 
         assert exc_info.value.reason == reason
-        assert exc_info.value.sip_status == status
+        assert exc_info.value.sip_status == sip_status
         # One clean WARNING with the raw fields — no scary traceback.
         assert f"reason={reason}" in caplog.text
         assert "Traceback" not in caplog.text
+
+    async def test_sip_status_parsed_from_message_when_metadata_missing(self, monkeypatch):
+        install_failing_sip_api(monkeypatch, FakeSipError(
+            status=429, message="INVITE failed: sip status: 486: Busy Here"))
+        with pytest.raises(CallNotAnsweredError) as exc_info:
+            await LiveKitSipDialer(log).dial_out("room-x", "+5511999998888", make_profile())
+        assert exc_info.value.reason == "busy"
+        assert exc_info.value.sip_status == 486
+
+    async def test_top_level_status_used_when_it_is_a_sip_code(self, monkeypatch):
+        # The 408 seen live arrived with status=408 and no metadata.
+        install_failing_sip_api(monkeypatch, FakeSipError(
+            status=408, code="canceled", message="twirp error unknown: sip request timed out"))
+        with pytest.raises(CallNotAnsweredError) as exc_info:
+            await LiveKitSipDialer(log).dial_out("room-x", "+5511999998888", make_profile())
+        assert exc_info.value.reason == "no-answer"
+        assert exc_info.value.sip_status == 408
 
     async def test_timed_out_message_without_status_still_maps_to_no_answer(self, monkeypatch):
         # Defensive: some SDK versions omit the status attribute.

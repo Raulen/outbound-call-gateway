@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 import logging
 from dataclasses import dataclass
@@ -44,22 +45,46 @@ def _classify_dial_failure(exc: Exception) -> Optional[CallNotAnsweredError]:
     category, or None when it looks like a genuine system error (trunk
     auth, network, 5xx) that should keep the current retry semantics.
 
-    Inspects attributes defensively (never the exception class): the SDK's
-    error surface has changed across versions.
+    Inspects attributes defensively (never the exception class).  Verified
+    against real traffic: the SIP status lives in the twirp error's
+    metadata ('sip_status_code'); the top-level `status` attribute is the
+    HTTP/twirp layer (e.g. 429 for a SIP 480) and only coincides with the
+    SIP code for timeouts (408).  Sources, most reliable first:
+
+      1. metadata['sip_status_code']            (seen live: SIP 480)
+      2. "sip status: NNN" parsed from message  (same error, other SDKs)
+      3. top-level `status` when it is a mapped SIP code (seen live: 408)
+      4. "request timed out" keyword -> no-answer
     """
-    status = getattr(exc, "status", None)
-    try:
-        status = int(status) if status is not None else None
-    except (TypeError, ValueError):
-        status = None
+    sip_status: Optional[int] = None
 
-    reason = _UNREACHABLE_SIP_STATUS.get(status)
-    if reason is None:
-        message = str(getattr(exc, "message", "") or exc).lower()
-        if "request timed out" in message:  # some SDK versions omit status
-            reason = "no-answer"
+    metadata = getattr(exc, "metadata", None)
+    if isinstance(metadata, dict):
+        try:
+            sip_status = int(metadata.get("sip_status_code", ""))
+        except (TypeError, ValueError):
+            sip_status = None
 
-    return CallNotAnsweredError(reason, status) if reason else None
+    message = str(getattr(exc, "message", "") or exc)
+    if sip_status is None:
+        m = re.search(r"sip status:\s*(\d{3})", message, re.IGNORECASE)
+        if m:
+            sip_status = int(m.group(1))
+
+    if sip_status is None:
+        raw = getattr(exc, "status", None)
+        try:
+            raw = int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            raw = None
+        if raw in _UNREACHABLE_SIP_STATUS:
+            sip_status = raw
+
+    reason = _UNREACHABLE_SIP_STATUS.get(sip_status)
+    if reason is None and "request timed out" in message.lower():
+        reason, sip_status = "no-answer", sip_status or 408
+
+    return CallNotAnsweredError(reason, sip_status) if reason else None
 
 
 class LiveKitTokenFactory:
