@@ -64,7 +64,8 @@ class FakeUltravox:
                            "language_hint": language_hint})
         if self.error:
             raise self.error
-        return "wss://uv.test/join/xyz"
+        from lk_ultravox_bridge.ultravox_client import UltravoxCall
+        return UltravoxCall(join_url="wss://uv.test/join/xyz", call_id="uv-call-1")
 
 
 class FakeDialer:
@@ -334,7 +335,7 @@ class BlockingProcessor:
         self.started: list = []
         self.release: dict = {}
 
-    async def process_body(self, body, ack=None):
+    async def process_body(self, body, ack=None, receive_count=None):
         evt = asyncio.Event()
         self.release[body] = evt
         self.started.append(body)
@@ -452,7 +453,7 @@ class TestRunWorkerLoopConcurrency:
 
     async def test_processing_failure_does_not_stop_the_loop(self, caplog):
         class ExplodingThenBlockingProcessor(BlockingProcessor):
-            async def process_body(self, body, ack=None):
+            async def process_body(self, body, ack=None, receive_count=None):
                 if body == "bad":
                     self.started.append(body)
                     raise ValueError("boom")

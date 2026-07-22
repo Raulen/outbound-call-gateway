@@ -40,9 +40,10 @@ def sent_body(route) -> dict:
 
 class TestRequestContract:
     async def test_default_payload_shape(self, calls_api):
-        join_url = await make_client().create_ws_call_join_url()
+        call = await make_client().create_ws_call_join_url()
 
-        assert join_url == "wss://uv.test/join/abc"
+        assert call.join_url == "wss://uv.test/join/abc"
+        assert call.call_id == "call-123"  # kept for post-call correlation
         body = sent_body(calls_api)
         assert body == {
             # cfg default prompt + the voicemail guard (enabled by default)

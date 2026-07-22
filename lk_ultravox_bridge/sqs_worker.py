@@ -17,8 +17,9 @@ from .logging_utils import CallLogAdapter, ConfigDumper
 from .sqs_consumer import SqsClientFactory, SqsQueueResolver, SqsLongPollConsumer
 from .message_models import TriggerCallMessageParser
 from .ultravox_client import UltravoxCallClient
-from .livekit_client import CallNotAnsweredError, LiveKitSipDialer
+from .livekit_client import CallNotAnsweredError, LiveKitSipDialer, extract_sip_status
 from .agent import BridgeAgent
+from .call_history import CallHistoryEmitter, NullCallHistoryPublisher, build_call_history_publisher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sqs-worker")
@@ -40,12 +41,13 @@ HEARTBEAT_INTERVAL_S = 60.0
 
 
 class TriggerCallProcessor:
-    def __init__(self, cfg: BridgeConfig, log: logging.Logger):
+    def __init__(self, cfg: BridgeConfig, log: logging.Logger, event_publisher=None):
         self._cfg = cfg
         self._log = log
         self._parser = TriggerCallMessageParser()
         self._uv = UltravoxCallClient(cfg, log)
         self._dialer = LiveKitSipDialer(log)
+        self._events = event_publisher or NullCallHistoryPublisher()
 
     def build_ultravox_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         md = payload.get("metadata") or {}
@@ -63,7 +65,8 @@ class TriggerCallProcessor:
             "transport": "ULTRAVOX_SIP",
         }
 
-    async def process_body(self, body: str, ack: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+    async def process_body(self, body: str, ack: Optional[Callable[[], Awaitable[None]]] = None,
+                           receive_count: Optional[int] = None) -> None:
         """Run one TRIGGER_CALL end to end.
 
         `ack` deletes the SQS message; it is invoked as soon as the SIP dial is
@@ -105,6 +108,19 @@ class TriggerCallProcessor:
         metadata = self.build_ultravox_metadata(payload)
         call_log.info("ultravoxMetadata=%s", metadata)
 
+        # CALL_HISTORY events echo the same tracking ids sent to Ultravox —
+        # one id-resolution (build_ultravox_metadata), two consumers.  The
+        # base metadata is the call context only this gateway knows: room is
+        # the Loki correlation key, toNumber is which of the contact's
+        # numbers was actually dialed, country/provider is which SIP leg
+        # carried the call.
+        emitter = CallHistoryEmitter(self._events, call_log, metadata, base_metadata={
+            "room": room_name,
+            "toNumber": to_number,
+            "country": profile.country_code,
+            "provider": profile.provider,
+        })
+
         voice = msg.metadata.voice_id or profile.ultravox_voice
         voice_source = "trigger" if msg.metadata.voice_id else "profile"
         self._log.info(
@@ -113,7 +129,7 @@ class TriggerCallProcessor:
         )
 
         try:
-            uv_join_url = await self._uv.create_ws_call_join_url(
+            uv_call = await self._uv.create_ws_call_join_url(
                 system_prompt=system_prompt,
                 voice=voice,
                 metadata=metadata,
@@ -121,11 +137,14 @@ class TriggerCallProcessor:
                 country_code=profile.country_code,
                 language_hint=profile.language_hint,
             )
+            uv_join_url = uv_call.join_url
 
             self._log.info(
                 "[SQS] dialing SIP id=%s room=%s to=%s (waiting for answer, timeout=%.0fs)",
                 msg.id, room_name, to_number, DIAL_ANSWER_TIMEOUT_S,
             )
+            await emitter.emit("CALL_ATTEMPT_STARTED", "Dial attempt started")
+            dial_started_at = time.monotonic()
             try:
                 await asyncio.wait_for(
                     self._dialer.dial_out(room_name, to_number, profile),
@@ -145,6 +164,14 @@ class TriggerCallProcessor:
                 "[SQS] call not answered id=%s room=%s to=%s reason=%s — acking, no retry",
                 msg.id, room_name, to_number, e.reason,
             )
+            # Digicob's return file reads sipStatus from here; the key is
+            # omitted when there is no SIP code (dial-timeout) — never invented.
+            unreachable: Dict[str, Any] = {"reason": e.reason}
+            if e.sip_status is not None:
+                unreachable["sipStatus"] = e.sip_status
+            await emitter.emit(
+                "CALL_NOT_ANSWERED", f"Callee unreachable: {e.reason}", unreachable,
+            )
             if ack is not None:
                 try:
                     await ack()
@@ -154,15 +181,31 @@ class TriggerCallProcessor:
                         "(message may be redelivered)", msg.id, room_name,
                     )
             return
-        except Exception:
+        except Exception as e:
             # Genuine system error before anyone was reached (Ultravox REST,
             # trunk auth, network): drop whatever SIP leg LiveKit may have
-            # started and let the message be retried.
+            # started and let the message be retried (the queue's redrive
+            # policy DLQs it after maxReceiveCount attempts).
             await agent.teardown()
+            failure: Dict[str, Any] = {"reason": "system-error", "errorType": type(e).__name__}
+            # Unmapped SIP failures (e.g. 5xx from the trunk) still carry a
+            # code worth surfacing in the Digicob file; omitted when absent.
+            failure_sip_status = extract_sip_status(e)
+            if failure_sip_status is not None:
+                failure["sipStatus"] = failure_sip_status
+            if receive_count is not None:
+                failure["attempt"] = receive_count
+            await emitter.emit(
+                "SIP_CALL_FAILED", "System error before answer; message will be retried", failure,
+            )
             raise
 
         self._log.info("[SQS] SIP dial answered id=%s room=%s to=%s", msg.id, room_name, to_number)
         answered_at = time.monotonic()
+        await emitter.emit(
+            "SIP_DIAL_ANSWERED", "SIP dial answered",
+            {"answerDelaySeconds": int(round(answered_at - dial_started_at))},
+        )
 
         # Point of no return: the callee answered.  From here an SQS redelivery
         # would dial the same person again, so ack (delete) the message now;
@@ -176,11 +219,40 @@ class TriggerCallProcessor:
                     "(message may be redelivered)", msg.id, room_name,
                 )
 
-        await agent.run_bridge(uv_join_url, remote_track_timeout=REMOTE_TRACK_TIMEOUT_S)
+        async def _on_bridge_active() -> None:
+            await emitter.emit("SIP_BRIDGE_ACTIVE", "Audio bridge streaming")
+
+        agent.on_bridge_active = _on_bridge_active
+
+        def _call_ended_metadata(end_reason: str) -> Dict[str, Any]:
+            # durationSeconds feeds the backend's talk-time (Digicob return
+            # and report totals); measured from answer, like durationS.
+            md: Dict[str, Any] = {
+                "durationSeconds": int(round(time.monotonic() - answered_at)),
+                "endReason": end_reason,
+            }
+            if uv_call.call_id:
+                md["ultravoxCallId"] = uv_call.call_id
+            return md
+
+        try:
+            await agent.run_bridge(uv_join_url, remote_track_timeout=REMOTE_TRACK_TIMEOUT_S)
+        except Exception:
+            # Post-answer failure: the call happened (talk time is real) and
+            # will NOT be retried (already acked), so this is a SIP_CALL_ENDED
+            # with an abnormal endReason — not a SIP_CALL_FAILED, which would
+            # move the customer to "failed" after a real conversation.
+            await emitter.emit(
+                "SIP_CALL_ENDED", "Call ended by bridge error", _call_ended_metadata("bridge-error"),
+            )
+            raise
+
+        end_reason = getattr(agent, "end_reason", None) or "unknown"
         self._log.info(
-            "[SQS] audio bridge finished for id=%s room=%s to=%s durationS=%.1f",
-            msg.id, room_name, to_number, time.monotonic() - answered_at,
+            "[SQS] audio bridge finished for id=%s room=%s to=%s durationS=%.1f endReason=%s",
+            msg.id, room_name, to_number, time.monotonic() - answered_at, end_reason,
         )
+        await emitter.emit("SIP_CALL_ENDED", "Call ended", _call_ended_metadata(end_reason))
 
 
 async def run_worker_loop(cfg: BridgeConfig, log: logging.Logger, consumer, processor) -> None:
@@ -210,11 +282,21 @@ async def run_worker_loop(cfg: BridgeConfig, log: logging.Logger, consumer, proc
             log.info("[SQS] deleted message receiptHandlePrefix=%s", receipt_handle[:10])
 
         try:
-            await processor.process_body(m.body, ack)
-        except Exception:
+            receive_count = int(m.attributes.get("ApproximateReceiveCount", 0))
+        except (TypeError, ValueError):
+            receive_count = 0
+
+        try:
+            await processor.process_body(m.body, ack, receive_count=receive_count or None)
+        except Exception as e:
+            # errorType/receiveCount feed the Grafana failure-by-type panel:
+            # ValueError/JSONDecodeError = bad payload (permanent — will DLQ
+            # after maxReceiveCount), ConnectionError etc. = transient.
             log.exception(
-                "[SQS] message processing failed (unless already acked at answer, "
-                "it will be retried after visibility timeout)"
+                "[SQS] message processing failed errorType=%s receiveCount=%d "
+                "(unless already acked at answer, it will be retried after "
+                "visibility timeout; the redrive policy DLQs it after max receives)",
+                type(e).__name__, receive_count,
             )
 
     hb_task = asyncio.create_task(_heartbeat())
@@ -275,7 +357,10 @@ async def main() -> None:
     sqs = SqsClientFactory(cfg).build()
     queue_url = SqsQueueResolver(cfg, log).resolve_queue_url()
     consumer = SqsLongPollConsumer(sqs, queue_url, log)
-    processor = TriggerCallProcessor(cfg, log)
+    event_publisher = build_call_history_publisher(cfg, sqs, log)
+    if isinstance(event_publisher, NullCallHistoryPublisher):
+        log.info("[Events] CALL_HISTORY publishing disabled (CALL_HISTORY_QUEUE_NAME not set)")
+    processor = TriggerCallProcessor(cfg, log, event_publisher)
 
     log.info(
         "[SQS] starting long polling worker queueUrl=%s maxConcurrentCalls=%d",

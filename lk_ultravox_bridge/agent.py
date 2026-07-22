@@ -9,7 +9,7 @@ from livekit import rtc
 
 from .config import BridgeConfig, CountryProfile
 from .livekit_client import LiveKitTokenFactory, LiveKitRoomConnector, LiveKitRoomTerminator, LiveKitSession
-from .audio_bridge import AudioBridge
+from .audio_bridge import AudioBridge, StopSignal
 
 
 class BridgeAgent:
@@ -23,7 +23,15 @@ class BridgeAgent:
         self.session: Optional[LiveKitSession] = None
         self.remote_audio_track: Optional[rtc.RemoteAudioTrack] = None
         self._remote_track_ready = asyncio.Event()
-        self._stop = asyncio.Event()
+        self._stop = StopSignal()
+        # Awaited (when set) right after the audio bridge starts streaming —
+        # the SQS worker hooks CALL_ACTIVE emission here.
+        self.on_bridge_active = None
+
+    @property
+    def end_reason(self) -> Optional[str]:
+        """Why the call stopped (first cause wins), or None if still running."""
+        return self._stop.reason
 
     async def connect_livekit(self) -> None:
         self._log.info(
@@ -56,12 +64,12 @@ class BridgeAgent:
                         "[Bridge] stop requested because SIP participant left room=%s identity=%s",
                         self.room_name, p.identity,
                     )
-                    self._stop.set()
+                    self._stop.trigger("callee-hangup")
 
             @room.on("disconnected")
             def _on_disc():
                 self._log.info("[LiveKit][RTC] Room disconnected; requesting bridge stop room=%s", self.room_name)
-                self._stop.set()
+                self._stop.trigger("room-lost")
 
         self.session = await connector.connect_and_publish(self.room_name, self.identity, _register_handlers)
         self._log.info("[Bridge] LiveKit session established room=%s identity=%s", self.room_name, self.identity)
@@ -89,6 +97,8 @@ class BridgeAgent:
                 raise RuntimeError("Remote track ready event set, but track is None")
 
             self._log.info("[Bridge] starting audio bridge room=%s", self.room_name)
+            if self.on_bridge_active is not None:
+                await self.on_bridge_active()
             await AudioBridge(self._cfg, self._log).run(
                 join_url=ultravox_join_url,
                 remote_audio_track=self.remote_audio_track,

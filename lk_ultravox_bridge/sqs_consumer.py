@@ -55,6 +55,10 @@ class SqsLongPollConsumer:
             MaxNumberOfMessages=max_messages,
             WaitTimeSeconds=wait_seconds,
             VisibilityTimeout=visibility_timeout,
+            # ApproximateReceiveCount tells us which delivery attempt this is
+            # (the queue's redrive policy DLQs the message after the max), so
+            # failures can be reported with their attempt number.
+            AttributeNames=["ApproximateReceiveCount"],
         )
         msgs: List[SqsMessage] = []
         for m in resp.get("Messages", []):

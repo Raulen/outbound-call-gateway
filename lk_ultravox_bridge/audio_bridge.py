@@ -11,6 +11,38 @@ from livekit import rtc
 from .config import BridgeConfig
 
 
+class StopSignal(asyncio.Event):
+    """asyncio.Event that also records WHY the call is stopping.
+
+    The first recorded reason wins: teardown causes cascade (SIP participant
+    leaves -> audio stream ends -> WS closes) and only the first one is the
+    actual cause.  Reasons are kebab-case so the Grafana endReason panel can
+    extract them with the same `[a-z-]+` regexp used for dial categories.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.reason: str | None = None
+
+    def trigger(self, reason: str) -> None:
+        if self.reason is None:
+            self.reason = reason
+        self.set()
+
+
+def request_stop(stop_evt: asyncio.Event, reason: str) -> None:
+    """trigger(reason) when the event is a StopSignal; plain set() otherwise.
+
+    AudioBridge accepts any asyncio.Event (tests and external callers pass a
+    bare one), so the reason is best-effort by design.
+    """
+    trigger = getattr(stop_evt, "trigger", None)
+    if trigger is not None:
+        trigger(reason)
+    else:
+        stop_evt.set()
+
+
 class AudioBridge:
     def __init__(self, cfg: BridgeConfig, log: logging.Logger):
         self._cfg = cfg
@@ -121,7 +153,7 @@ class AudioBridge:
         finally:
             await audio_stream.aclose()
             self._log.info("[LK->UV] stream stopped")
-            stop_evt.set()
+            request_stop(stop_evt, "sip-audio-ended")
 
     async def _ultravox_to_livekit(self, ws, audio_source: rtc.AudioSource, stop_evt: asyncio.Event) -> None:
         samples_per_frame = int(self._cfg.sample_rate * (self._cfg.frame_ms / 1000.0))
@@ -247,7 +279,7 @@ class AudioBridge:
         finally:
             watchdog_task.cancel()
             self._log.info("[UV->LK] stream stopped")
-            stop_evt.set()
+            request_stop(stop_evt, "ultravox-closed")
 
     async def _uv_silence_watchdog(self, stop_evt: asyncio.Event, last_msg_getter, threshold_s: float = 30.0, check_interval_s: float = 5.0) -> None:
         try:
@@ -259,7 +291,7 @@ class AudioBridge:
                         "[UV->LK] watchdog: no Ultravox message in %.1fs (threshold=%.0fs); aborting call",
                         silent_for, threshold_s,
                     )
-                    stop_evt.set()
+                    request_stop(stop_evt, "silence-watchdog")
                     return
         except asyncio.CancelledError:
             pass

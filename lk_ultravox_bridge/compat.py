@@ -49,7 +49,7 @@ async def create_ultravox_ws_call(
         country_code: Optional[str] = None,
         language_hint: Optional[str] = None,
 ) -> str:
-    return await UltravoxCallClient(_cfg, log).create_ws_call_join_url(
+    call = await UltravoxCallClient(_cfg, log).create_ws_call_join_url(
         system_prompt=system_prompt,
         voice=voice,
         greeting_message=greeting_message,
@@ -57,6 +57,7 @@ async def create_ultravox_ws_call(
         country_code=country_code,
         language_hint=language_hint,
     )
+    return call.join_url
 
 
 async def dial_out_livekit(room_name: str, to_number: str):

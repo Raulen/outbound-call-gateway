@@ -350,10 +350,84 @@
       }
     },
     {
+      "type": "stat",
+      "title": "Discando",
+      "description": "Dial-outs iniciados (CALL_ATTEMPT_STARTED). Discando − atendidas − não realizadas = travadas no meio.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 25, "w": 4, "h": 6 },
+      "targets": [{ "refId": "A", "queryType": "instant", "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `dialing SIP` [$__range]))" }],
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Encerramento por causa (endReason)",
+      "description": "Por que cada chamada concluída terminou (endReason= no log de conclusão; mesmo valor vai no SIP_CALL_ENDED da CallHistoryQueue). callee-hangup = cliente desligou; ultravox-closed = lado agente encerrou (inclui voicemail hangUp); silence-watchdog = Ultravox mudo ≥30s; bridge-error = falha pós-atendimento. Categorias novas aparecem sozinhas.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 4, "y": 25, "w": 20, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (endReason) (count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `audio bridge finished` | regexp `endReason=(?P<endReason>[a-z-]+)` [$__auto]))",
+          "legendFormat": "{{endReason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10 }, "min": 0, "decimals": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Falhas de processamento por tipo (errorType)",
+      "description": "errorType= da linha de falha. ValueError/JSONDecodeError = payload inválido (permanente: após 5 receives a redrive policy manda para a TriggerCallDLQ); ConnectionError/TimeoutError = transitório. DLQ com mensagem = alarme via CloudWatch (mensagem que falha no parse não emite CALL_HISTORY — não tem callId).",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 0, "y": 31, "w": 16, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (errorType) (count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `message processing failed` | regexp `errorType=(?P<errorType>[A-Za-z]+)` [$__auto]))",
+          "legendFormat": "{{errorType}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 30, "drawStyle": "bars" }, "min": 0, "decimals": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "A caminho da DLQ",
+      "description": "Falhas já na 4ª+ entrega (maxReceiveCount=5): mensagens a uma ou duas tentativas de irem para a TriggerCallDLQ.",
+      "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
+      "gridPos": { "x": 16, "y": 31, "w": 8, "h": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "instant",
+          "expr": "sum(count_over_time({app=\"outbound-call-gateway\", env=~\"$env\"} |= `message processing failed` | regexp `receiveCount=(?P<rc>[0-9]+)` | rc >= 4 [$__range]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
       "type": "logs",
       "title": "Warnings & errors",
       "datasource": { "type": "loki", "uid": "${DS_LOGS}" },
-      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 9 },
+      "gridPos": { "x": 0, "y": 37, "w": 24, "h": 9 },
       "targets": [
         {
           "refId": "A",
