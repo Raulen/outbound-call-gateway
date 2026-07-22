@@ -67,6 +67,7 @@ def make_config(**overrides) -> BridgeConfig:
         aws_secret_access_key="",
         aws_account_id="123456789012",
         sqs_queue_name="TestQueue",
+        call_history_queue_name="",
     )
     defaults.update(overrides)
     return BridgeConfig(**defaults)

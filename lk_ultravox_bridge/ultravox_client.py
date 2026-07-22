@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import logging
-from typing import Optional, Dict, Any
+from typing import NamedTuple, Optional, Dict, Any
 
 import httpx
 
@@ -58,6 +58,14 @@ _VOICEMAIL_GUARD_PROMPTS_BY_COUNTRY = {
 }
 
 
+class UltravoxCall(NamedTuple):
+    """Result of creating an Ultravox call: the WS to join and the call's id
+    (used for post-call correlation with recordings/transcripts)."""
+
+    join_url: str
+    call_id: Optional[str]
+
+
 class UltravoxCallClient:
     def __init__(self, cfg: BridgeConfig, log: logging.Logger):
         self._cfg = cfg
@@ -73,7 +81,7 @@ class UltravoxCallClient:
             temperature: Optional[float] = None,
             country_code: Optional[str] = None,
             language_hint: Optional[str] = None,
-    ) -> str:
+    ) -> UltravoxCall:
         self._cfg.require("ULTRAVOX_API_KEY", self._cfg.ultravox_api_key)
 
         resolved_voice = voice or self._cfg.ultravox_voice
@@ -150,4 +158,4 @@ class UltravoxCallClient:
         if not join_url:
             raise RuntimeError(f"Ultravox call created but joinUrl is missing. Response: {data}")
 
-        return join_url
+        return UltravoxCall(join_url=join_url, call_id=ultravox_call_id)

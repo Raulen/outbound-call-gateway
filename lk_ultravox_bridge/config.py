@@ -129,6 +129,10 @@ class BridgeConfig:
     aws_secret_access_key: str = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
     aws_account_id: str = os.environ.get("AWS_ACCOUNT_ID", "")
     sqs_queue_name: str = os.environ.get("SQS_QUEUE_NAME", "TriggerCallQueue")
+    # CALL_HISTORY event publishing (CallHistoryQueue).  Optional, same
+    # opt-in pattern as GRAFANA_*: empty = events disabled, everything else
+    # runs exactly as before.
+    call_history_queue_name: str = os.environ.get("CALL_HISTORY_QUEUE_NAME", "")
 
     def require(self, name: str, val: str) -> None:
         if not val:

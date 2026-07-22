@@ -102,6 +102,9 @@ class TestSqsLongPollConsumer:
             "MaxNumberOfMessages": 1,
             "WaitTimeSeconds": 20,
             "VisibilityTimeout": 300,
+            # Delivery-attempt number: feeds the CALL_FAILED `attempt` field
+            # and the DLQ-bound Grafana stat (redrive at maxReceiveCount=5).
+            "AttributeNames": ["ApproximateReceiveCount"],
         }]
 
     def test_receive_maps_messages(self):

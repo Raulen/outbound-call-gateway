@@ -40,6 +40,29 @@ _UNREACHABLE_SIP_STATUS = {
 }
 
 
+def extract_sip_status(exc: Exception) -> Optional[int]:
+    """Best-effort SIP status from a LiveKit dial failure, or None.
+
+    Only the two reliable sources (see _classify_dial_failure): the twirp
+    error metadata and the "sip status: NNN" message pattern.  The
+    top-level `status` attribute is deliberately NOT used here — it is the
+    HTTP/twirp layer, not SIP.  Callers must omit the field when this
+    returns None: never invent a code.
+    """
+    metadata = getattr(exc, "metadata", None)
+    if isinstance(metadata, dict):
+        try:
+            return int(metadata.get("sip_status_code", ""))
+        except (TypeError, ValueError):
+            pass
+
+    message = str(getattr(exc, "message", "") or exc)
+    m = re.search(r"sip status:\s*(\d{3})", message, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def _classify_dial_failure(exc: Exception) -> Optional[CallNotAnsweredError]:
     """Maps a create_sip_participant failure to an unreachable-callee
     category, or None when it looks like a genuine system error (trunk
@@ -56,20 +79,8 @@ def _classify_dial_failure(exc: Exception) -> Optional[CallNotAnsweredError]:
       3. top-level `status` when it is a mapped SIP code (seen live: 408)
       4. "request timed out" keyword -> no-answer
     """
-    sip_status: Optional[int] = None
-
-    metadata = getattr(exc, "metadata", None)
-    if isinstance(metadata, dict):
-        try:
-            sip_status = int(metadata.get("sip_status_code", ""))
-        except (TypeError, ValueError):
-            sip_status = None
-
+    sip_status = extract_sip_status(exc)
     message = str(getattr(exc, "message", "") or exc)
-    if sip_status is None:
-        m = re.search(r"sip status:\s*(\d{3})", message, re.IGNORECASE)
-        if m:
-            sip_status = int(m.group(1))
 
     if sip_status is None:
         raw = getattr(exc, "status", None)

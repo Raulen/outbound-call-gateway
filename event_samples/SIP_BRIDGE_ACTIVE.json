@@ -1,0 +1,18 @@
+{
+  "id": "01981f2e-9400-7c33-9c5a-4fad8e3c2b03",
+  "messageType": "CALL_HISTORY",
+  "source": "outbound-call-gateway",
+  "organizationId": "e48d5637-975e-4e8c-bc10-bd0b20140066",
+  "tenantId": "tenant-97f5630d-838e-4497-b384-aff8769e508c",
+  "createdAt": "2026-07-21T12:00:16.030Z",
+  "metadata": {
+    "workflowId": "7adc6b1a-c5ec-4a21-83a9-732783588688",
+    "campaignId": "6adc6b1a-c5ec-4a21-83a9-732783588688",
+    "customerId": "14972711-f3b1-3885-8e20-df3621db1f4a",
+    "userId": "00180708-8abf-479b-a1ce-8e11985d5fda",
+    "callId": "dd3ec249-5954-499b-b18b-f35351086264",
+    "status": "SIP_BRIDGE_ACTIVE",
+    "statusDescription": "Audio bridge streaming",
+    "metadataJson": "{\"room\": \"call-a1b2c3\", \"toNumber\": \"+5511999998888\", \"country\": \"BR\", \"provider\": \"twilio\"}"
+  }
+}
